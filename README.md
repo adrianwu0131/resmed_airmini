@@ -25,10 +25,11 @@ Then load the skill with `skill_view(name='resmed-cpap-sdcard')`.
 | Full-night capture → SQLite (`am_stream_wave`) → plots | verified, capacity measured |
 | AirSense 10 SD-card parsing (STR/PLD/EVE/annotations) | verified |
 | AirView-format PDF reproduction | verified against originals |
+| Stable long-duration connection (app-compatible handshake + keepalive) | handshake rebuilt; duration still being measured |
 
 ---
 
-## The five things that cost the most time
+## The six things that cost the most time
 
 These are all in `references/airmini-access.md` with the supporting measurements.
 
@@ -74,6 +75,49 @@ RFCOMM slot must still be open on the device. Also note `bluetoothctl connect`
 reporting `Connected: yes` only means the **ACL** link is up — the SPP slot can
 still be closed, and a Python `connect()` will still fail with `Host is down`.
 
+**6. Connections die because the client only listens — copy the phone app.**
+The app's BLE RPC log (`airmini_log_*.txt`) shows what a working client does:
+
+```
+OUT 1 StartStream    → TIMEOUT      ← app's deliberate probe; session not open yet
+OUT 2 GetVersion     → Success
+OUT 3 GetSessionKey  → Success      ← session opens here
+OUT 4 SubscribeEvent → Success      ← subscribe to device events
+OUT 5..8 Get / GetDateTime / Get
+OUT 9 StartStream    → Success      ← second attempt really starts the stream
+… every 60 s: GetLoggedData → GetHistory → Get
+```
+
+Three differences from a naive client, each of which we measured:
+
+| | naive client | phone app |
+|---|---|---|
+| session lifetime | **0–299 s** (six streams) | **4–10 hours** (longest 36,650 s) |
+| after opening the session | straight to `StartStream` | `GetVersion` → `GetSessionKey` → **`SubscribeEvent`** → `Get` → `StartStream` |
+| while streaming | **only receives** | **sends a round of RPC every 60 s** |
+
+`Heartbeat` travels device→client (the app log shows one every 60 s), so the
+client does **not** send it — the app keeps the link alive by *originating*
+`GetLoggedData`/`GetHistory`/`Get` every minute. A receive-only client is
+treated as idle and dropped.
+
+`scripts/stable_capture.py` reproduces this sequence: app-order handshake,
+`SubscribeEvent`, and a 55-second keepalive round (55 s avoids landing in
+phase with the device's own 60 s heartbeat).
+
+Two notes from the app log worth keeping:
+- `StartStream` timing out right after connect is **normal app behaviour**, not
+  a handshake failure.
+- The app's sessions cluster around 23:00–09:30 (while the device is being
+  worn), and most are `INBOUND_CONNECTION` — *the device dials out*. That is
+  why the SPP window is so hard to catch in standby.
+
+**Still open:** `EnterTherapy` / `EnterMaskFit` / `EnterStandby` exist as
+protocol methods (no public libairmini API for them). Whether sending
+`EnterTherapy` keeps the SPP window open in standby is **unverified** — it
+changes device state, so test it with the mask on and only with the user
+present.
+
 ---
 
 ## Layout
@@ -81,6 +125,8 @@ still be closed, and a Python `connect()` will still fail with `Host is down`.
 ```
 SKILL.md                         skill entry point (procedures + hard rules)
 scripts/
+  stable_capture.py              app-compatible capture: app-order handshake,
+                                 SubscribeEvent, 55 s keepalive round
   capture_hunt.py                100 Hz capture; hunts the intermittent SPP window
   probe_intervals.py             discover which sampleIntervalMs the device accepts
   airmini_capture2.py            capture with auto-reconnect (key-first, PIN fallback)
@@ -103,7 +149,14 @@ references/
 ## Quick start
 
 ```bash
-# capture at true 100 Hz (ch5, key-only reconnect)
+export AIRMINI_LIB=/path/to/libairmini.so
+export AIRMINI_ADDR=<BT_ADDR>          # optional: default <BT_ADDR>
+export AIRMINI_PIN=<PAIRING_CODE>      # only needed for the very first pairing
+
+# stable capture at true 100 Hz (ch5, key-only reconnect, 55 s keepalive)
+python3 scripts/stable_capture.py --minutes 480 --sample 10
+
+# or: hunt the intermittent SPP window (useful when the device is in standby)
 python3 scripts/capture_hunt.py --minutes 480 --sample 10
 
 # ingest into the aggregate database

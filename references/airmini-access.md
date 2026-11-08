@@ -288,8 +288,41 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   - **ts 格式要統一帶小數秒**（`2026-11-07T05:24:47.395000`）：實測若整秒時
     省略小數秒，會出現同一分鐘內部分列有小數秒、部分沒有，字串比較與
     `LIKE` 查詢都會漏列。真實資料（由 `datetime.isoformat()` 產生）已一致。
-- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濾、120s 無 StreamData 即判斷斷流）、
-  串型別組合上限。
+- **【2026-11-07 23:30 根因定案：穩定連線要抄手機 App 的三件事】**
+  對照 `~/airmini/small/airmini_log_*.txt`（App 的 BLE RPC 日誌）與我們自己的失敗記錄：
+  | | 我們的紀錄 | App 的紀錄 |
+  |---|---|---|
+  | 單次連線維持 | **0～299 秒**（streamId 1~6） | **4～10 小時**（最長 36,650s） |
+  | 開 session 後 | 直接 StartStream | GetVersion → **GetSessionKey** → **SubscribeEvent** → Get → StartStream |
+  | 連線中 | **只收不送** | **每 60 秒主動送一輪**：GetLoggedData → GetHistory → Get |
+  - **Heartbeat 是裝置→主機方向**（App 日誌每 60 秒一筆 NOTIFICATION Heartbeat），
+    **主機端不需要送心跳**；App 保持連線靠的是**自己每 60 秒送一輪 RPC**。
+    這就是「只收不送 → 閒置被視為無效 → 被裝置收線」的機制。
+  - **App 連線後第一個 RPC 故意是 StartStream 且必然 TIMEOUT**（session 還沒開），
+    然後才 GetSessionKey 開 session。**這不是錯誤，是 App 的探測行為**——
+    日誌裡每次 INBOUND_CONNECTION 後都是 `OUT 1 StartStream → TIMEOUT`。
+    我們不必模仿這個多餘步驟，但要知道 **StartStream timeout ≠ 握手失敗**。
+  - **`SubscribeEvent` 一定要送**：App 在 GetSessionKey 之後立刻送，
+    參數是 4 個事件名（App 日誌不記參數內容，只記 count=4/3）。
+    libairmini **沒有** `airmini_subscribe_event()` 公開 API 與 params builder，
+    要用 `airmini_call(am, "SubscribeEvent", params_json, cb, user)` 自己組。
+  - **App 的連線幾乎都發生在晚上 23:00～隔天 09:30**（戴機睡覺時段），
+    而且多數是 `INBOUND_CONNECTION`＝**機器主動撥入 App**。
+    這解釋了「待機時 SPP 視窗難開」：**機器在治療中才會主動維持藍牙連線**。
+  - **實作：`scripts/stable_capture.py`**（依上述序列重建握手＋55 秒保活輪詢）。
+- **【2026-11-07 23:45 新線索】`EnterTherapy` / `EnterMaskFit` / `EnterStandby` 存在但未試過**：
+  `protocol.h` 有這三個 method 常數（`AIRMINI_M_ENTER_THERAPY` 等），libairmini
+  **沒有對應的公開 API 與 params builder**，要用 raw
+  `airmini_call(am, "EnterTherapy", params_json, cb, user)` 自行組參數。
+  假設：主動送 `EnterTherapy` 會讓機器進入治療狀態並**持續維持 SPP 視窗開啟**，
+  這是「待機時開窗機率極低（486 次輪詢 0 命中）」的可能解法。
+  **UNVERIFIED——尚未在真機測試過**，下次連線時優先實驗：
+  先送 EnterTherapy → 再 StartStream → 觀察 180 秒後視窗是否仍在。
+  （注意：這會改變機器狀態，屬治療控制面，測試前要和使用者確認，
+  且不應在無面罩佩戴時長時間停留於治療狀態。）
+- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濫、120s 無 StreamData 即判斷斷流）、
+  串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
+  （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
 - **金鑰直連已在真機完整驗證（2026-11-07 17:58）**：`airmini_open_session(mpk)` 回
   rc=0 → `[ok:session] {"sessionKey":…}` → StartStream rc=0 → dataIds 三型 valid:true
   → 586 筆 StreamData 連續流入。**金鑰直連＝免 PIN、免按機器按鈕的已證路徑**
@@ -348,7 +381,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 
 ### AirView 版式報告重產（2026-11-06 v2 已對齊原版）
 
-- **SQLite 彙整庫**：`~/airmini/s10/build_db.py`（documents venv）→
+- **SQLite 彙整庫**：`scripts/build_db.py`（documents venv）→
   `'/path/to/cpap_data.db'`（138MB）：`s10_daily/sessions/session_files/pld_2s（99.4 万列）/events/csl_events`
   ＋ `am_events/respiratory_events/leak_1min/pressure_1min/sessions/nights/meta`。【2026-11-07 補】
   am_events 實際僅 **371 筆＝生命週期事件**（PowerOn/MaskOn 等），勿再誤記為 3.8 萬——分鐘資料筆數（38,655）才是大件；逐事件時刻**只有 AirSense 有**（Central 1432/Hypopnea 486/Apnea 166/Obstructive 136），AirMini 藍牙只給逐夜次數（CAI/OAI/HI 總別）。
@@ -361,13 +394,13 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   校正後雙機 121×110 全配對重疊 = 0、AirMini 夜 ≈23–01 睡、07:45–08:15 醒（符合作息）。
   EDF 結構重點：每 record 含**多樣本**（PLD 30 樣×2s＝60s/record），樣本時間＝(record_idx×ns＋si)×2；
   EVE onset/dur 單位＝**秒**；SAD（SpO2/脈搏）無模組＝空白表。重建：直接重跑 build_db.py。
-- 圖表：`~/airmini/s10/avview_charts.py`（conda `ml` env）→
+- 圖表：`scripts/avview_charts.py`（conda `ml` env）→
   `~/.hermes/cache/scratch/avview/`：`f1_usage.png`（檔案1，語意見下條）、
   `detN_YYYYMMDD.png`（檔案3 每夜三面板：Leak 虛線 24、Pressure 虛線 20/4、Events
   雙色刻記 AirSense=藍/AirMini=橘、HH:MM 連續軸）、
   `b2_usage/leak/press/ahi/mini.png`（檔案2 雙機並排柱）、`night_stats.json`（夜統計）。
   舊 `det_*_{A,M}`/`f2_mini`/`p2_*` 為棄用產物。
-- PDF 組裝：`~/airmini/s10/avview_complete_pdf.py`（documents venv）→
+- PDF 組裝：`scripts/avview_complete_pdf.py`（documents venv）→
   `~/airmini/報告/20261106 吳俊毅 202607-202611-{1,2,3}.pdf`。
   **完整資料版（睡眠夜制）**：檔案1＝**照原版 90 天視窗鏡射**（原版 "90 day period ending
   01/11/2026"；槽位/星期標籤/紅空心全高＝**主機當日未用**皆照原版語意；AirMini 只以藍柱

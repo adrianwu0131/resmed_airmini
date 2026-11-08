@@ -1,7 +1,7 @@
 ---
 name: resmed-cpap-sdcard
 description: "Parse ResMed AirSense SD cards and AirMini Bluetooth data."
-version: 1.1.0
+version: 1.2.0
 author: Chun Yi Wu (adrianwu0131), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -228,6 +228,10 @@ metadata:
   （SDP 列出 ch5=資料通道／ch6=iAP 通道；ch5 待機時隨機開窗，實測 40 選 2）；
   密集輪詢 2~4s，**通了直接握手不放手**（探測腳本「一通就 close」會浪費視窗）。
   `--minutes/--sample/--report` 控時長與取樣率
+- `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
+  握手順序 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
+  加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。
+  實測單次連線時長：舊版 0～299 秒 → App 4～10 小時
 - `references/clinical-notes.md` — 中樞型呼吸中止的名詞/機制/2025 AASM 治療選項摘要
   （醫療問答與門診匯談支持，非診斷）
 - `references/file-format.md` — 通道表、header 版位、各檔型格式
