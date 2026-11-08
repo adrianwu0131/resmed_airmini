@@ -144,7 +144,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 - 實測鏈：python 直連 ch5（閃藍時最穩）→ ctypes `pair(PIN)`（回應含 masterPairKey+sessionKey）→ `open_session(key)`（**rc=2 ERR_STATE
   ＝會話已開＝成功語意，此步不可略**）→ GetDateTime（回 dateTime ✓）→
   StartStream（[ok:stream] 回 dateTime＋dataIds 三型 valid:true ✓）→ StreamData 通知。
-- **實作檔**：`scripts/airmini_capture2.py`（**現行正解**）／
+- **實作檔**：`airmini_capture2.py`（**現行正解**）／
   `airmini_server.py`（舊版，StartStream 手寫 params 有 bug，勿再用）／`airmini_live.py`
   （舊版，開會話順序有誤）。
   ＋ `libairmini.so`（`gcc -fPIC -shared src/*.c -lssl -lcrypto`，含 rpath）。
@@ -363,16 +363,46 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   - matplotlib 中文字型：`font_manager.addfont('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')`
     後設 `rcParams['font.family']`（系統 .ttc 可用於 matplotlib；reportlab 不吃 .ttc）。
 
-### 夜間自動錄製部署到 pi5（2026-11-07 已部署）
+### 夜間自動錄製部署到 pi5（2026-11-07 已部署，2026-11-09 更新為穩定版）
 
-- 把 `src/*.c *.h`＋`include/airmini/*.h` scp 到 `pi5:~/airmini_capture/`，**native
-  gcc** `-O2 -fPIC -shared -I include src/*.c -o libairmini.so -lssl -lcrypto`
-  （pi5 系統自帶 openssl 開發檔，不需 conda；主機 conda 路線僅本機需要）。
-- python 驅動（`airmini_live.py` ctypes 版）改 LIB＝絕對路徑（dlopen 陷阱）；PIN
-  檔 `pull/pin.txt`（chmod 600，在 pi5 端寫入，不經終端輸出）；迴圈腳本
-  `capture_night.sh`（22:00→07:00，每次抓 60 分鐘、失敗 sleep 10 重來）＋ crontab
-  `0 22 * * *`；key 檔同樣以每次配對的最新值維護。
-- 串流只在治療進行中產值：夜間 cron 覆蓋睡眠時段即對，白天待機只有平線。
+- **目標機器**：pi5（192.168.100.6，aarch64 Debian 13、Python 3.13.5）。
+  環境檢查（部署前必查）：`uname -m`＝aarch64、`python3 -c 'import socket;
+  socket.AF_BLUETOOTH'` 存在、`/usr/include/openssl/ssl.h` 存在、
+  `lsmod | grep bluetooth` 有模組、`rfcomm`/`bluetoothctl` 可用。
+  **pi5 系統自帶 openssl 開發檔，用 native gcc 即可，不需 conda**（主機才需要 conda）。
+- **必須傳過去的檔案**：
+  | 檔案 | 來源 | 備註 |
+  |---|---|---|
+  | `stable_capture.py` | 本 repo `scripts/` | 現行正解（App 握手段序＋55s 保活） |
+  | `capture_hunt.py` | 本 repo `scripts/` | 備援：等間歇性 SPP 視窗 |
+  | `ingest_stream.py` | 本 repo `scripts/` | 入庫（`INSERT OR IGNORE` 冪等） |
+  | `libairmini.so` | `gcc -fPIC -shared src/*.c -lssl -lcrypto` | pi5 端自建 |
+  | `pull/master_pair_key.json` | **憑證** | scp 過去後 `chmod 600`；**不同時也不經 stdout** |
+  | `pull/pin.txt` | **憑證** | 僅首次配對用；`chmod 600` |
+- **憑證傳輸紀律**：PIN 與金鑰都是憑證——用 `scp` 傳檔、不 `echo` 到終端輸出、
+  落地 `chmod 600`、**不進 git**。
+- **環境變數**（寫在啟動腳本裡，不寫進碼）：
+  ```
+  AIRMINI_LIB=<capture dir>/libairmini.so
+  AIRMINI_ADDR=<BT_ADDR>
+  AIRMINI_KEYFILE=<capture dir>/pull/master_pair_key.json
+  AIRMINI_OUT=<capture dir>/pull/stream_data.jsonl
+  AIRMINI_CHANNEL=5
+  AIRMINI_KEEPALIVE=55
+  ```
+- **cron（pi5）**：`0 22 * * *` 跑 `start_night.sh 480`（錄 8 小時）、
+  `30 7 * * *` 跑 `ingest_night.sh`（入庫）。**先停掉舊的 `capture_night.sh`**
+  （它跑的是有 raw `airmini_call` bug 的 `airmini_live.py`）。
+- **入庫的 offset 要現算**：pi5 端 `ingest_night.sh` 從 jsonl 的
+  `startTime`（機器時鐘）與 `recv`（本機 UTC）配對量出偏移，
+  **不要寫死 807**——那是本機某一批的數值。
+- **DB 位置**：pi5 沒有完整彙整庫，首次執行時 `scp` 主機的副本過來；
+  之後 pi5 是獨立寫入者，**主機與 pi5 的寫入要分工**（見下「協作單寫者」）。
+- **限制（未解）**：機器待機時 SPP 視窗開啟機率極低（實測 486 次輪詢 0 命中），
+  所以 **pi5 的整夜錄製在「機器沒有被戴著睡覺」時大概率開不了**。
+  App 日誌顯示機器的藍牙連線集中在 23:00–09:30（戴機時段）且多為
+  `INBOUND_CONNECTION`（機器主動撥入）。**這是 pi5 整夜自動錄的真正瓶頸**，
+  不是程式問題。可能的解是 `EnterTherapy`（UNVERIFIED，見上）。
 
 ### 退路（直連不成）
 
@@ -381,7 +411,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 
 ### AirView 版式報告重產（2026-11-06 v2 已對齊原版）
 
-- **SQLite 彙整庫**：`scripts/build_db.py`（documents venv）→
+- **SQLite 彙整庫**：`~/airmini/s10/build_db.py`（documents venv）→
   `'/path/to/cpap_data.db'`（138MB）：`s10_daily/sessions/session_files/pld_2s（99.4 万列）/events/csl_events`
   ＋ `am_events/respiratory_events/leak_1min/pressure_1min/sessions/nights/meta`。【2026-11-07 補】
   am_events 實際僅 **371 筆＝生命週期事件**（PowerOn/MaskOn 等），勿再誤記為 3.8 萬——分鐘資料筆數（38,655）才是大件；逐事件時刻**只有 AirSense 有**（Central 1432/Hypopnea 486/Apnea 166/Obstructive 136），AirMini 藍牙只給逐夜次數（CAI/OAI/HI 總別）。
@@ -394,13 +424,13 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   校正後雙機 121×110 全配對重疊 = 0、AirMini 夜 ≈23–01 睡、07:45–08:15 醒（符合作息）。
   EDF 結構重點：每 record 含**多樣本**（PLD 30 樣×2s＝60s/record），樣本時間＝(record_idx×ns＋si)×2；
   EVE onset/dur 單位＝**秒**；SAD（SpO2/脈搏）無模組＝空白表。重建：直接重跑 build_db.py。
-- 圖表：`scripts/avview_charts.py`（conda `ml` env）→
+- 圖表：`~/airmini/s10/avview_charts.py`（conda `ml` env）→
   `~/.hermes/cache/scratch/avview/`：`f1_usage.png`（檔案1，語意見下條）、
   `detN_YYYYMMDD.png`（檔案3 每夜三面板：Leak 虛線 24、Pressure 虛線 20/4、Events
   雙色刻記 AirSense=藍/AirMini=橘、HH:MM 連續軸）、
   `b2_usage/leak/press/ahi/mini.png`（檔案2 雙機並排柱）、`night_stats.json`（夜統計）。
   舊 `det_*_{A,M}`/`f2_mini`/`p2_*` 為棄用產物。
-- PDF 組裝：`scripts/avview_complete_pdf.py`（documents venv）→
+- PDF 組裝：`~/airmini/s10/avview_complete_pdf.py`（documents venv）→
   `~/airmini/報告/20261106 吳俊毅 202607-202611-{1,2,3}.pdf`。
   **完整資料版（睡眠夜制）**：檔案1＝**照原版 90 天視窗鏡射**（原版 "90 day period ending
   01/11/2026"；槽位/星期標籤/紅空心全高＝**主機當日未用**皆照原版語意；AirMini 只以藍柱

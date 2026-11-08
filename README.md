@@ -137,6 +137,8 @@ scripts/
   resmed_s10.py                  AirSense SD-card EDF/STR/annotation parser
   s10_report.py                  compliance + per-night + daily CSV report
   night_curve_check.py           per-night curve/event alignment (pre-event hyperventilation)
+  start_night.sh                 pi5 nightly launcher (stable capture, falls back to the hunter)
+  ingest_night.sh                pi5 ingest launcher (measures the clock offset from the data)
 references/
   airmini-access.md              Bluetooth protocol, channels, windows, error triage
   cpap-data-sources.md           AirSense ↔ AirMini signal-by-signal mapping, schema
@@ -145,6 +147,49 @@ references/
   airview-pdf-report.md          AirView-layout PDF generation
   clinical-notes.md              central apnea terminology and treatment options
 ```
+
+## Running it on another machine (pi5)
+
+Pre-flight checks on the target — all five must pass before deploying:
+
+```bash
+uname -m                                     # aarch64 on the Pi
+python3 -c 'import socket; socket.AF_BLUETOOTH'
+ls /usr/include/openssl/ssl.h                # native gcc, no conda needed
+lsmod | grep bluetooth
+which rfcomm bluetoothctl
+```
+
+Copy across: `stable_capture.py`, `capture_hunt.py`, `ingest_stream.py`,
+`start_night.sh`, `ingest_night.sh`, and a locally built `libairmini.so`
+(`gcc -fPIC -shared src/*.c -lssl -lcrypto`). Copy the **credentials** —
+`pull/master_pair_key.json` and `pull/pin.txt` — with `scp` (never echo them
+to a terminal) and `chmod 600` them on the far side. Set the address and paths
+through the environment variables shown above; the scripts read them, they do
+not hardcode them.
+
+Cron on the Pi:
+
+```cron
+0 22 * * * <capture dir>/start_night.sh 480 >> .../cron.log 2>&1
+30 7 * * * <capture dir>/ingest_night.sh    >> .../cron.log 2>&1
+```
+
+`ingest_night.sh` measures the clock offset from the data itself (machine
+`startTime` vs local `recv`) rather than reusing a hardcoded number — a fixed
+offset is only valid for the batch it was measured on.
+
+**Known limitation.** In standby the device's SPP window is rare (486 polls,
+0 hits). The app's own connections cluster around 23:00–09:30 while the
+device is being worn, and most are `INBOUND_CONNECTION` — the device dials
+out. So unattended overnight capture only works when the device is actually
+in use; waiting for a standby window is not reliable enough to build on.
+Whether `EnterTherapy` keeps the window open is **unverified**.
+
+**Two writers, one database.** The main machine and the Pi can both write
+`cpap_data.db`. Keep the roles split (one rebuilds/reports, the other backs
+up and audits), make every script idempotent, and check the file mtime and
+`sync_meta` before rebuilding or altering a schema.
 
 ## Quick start
 
