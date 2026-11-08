@@ -2,7 +2,11 @@
  * 拉取 version/datetime/metrics/settings/history + 一分鐘時序與呼吸事件。
  * 依 libairmini 公共 API（https://github.com/psychoticbeef/libairmini）。
  * 建置/執行/狀態說明：見 references/airmini-access.md。
- * 已驗證：RFCOMM ch5 連線。待端到端驗證：配對→資料拉取（Pull/*.json）。
+ * 已驗證：配對→全史 GetLoggedData 拉取成功（88 夜完整時序＋呼吸事件）。
+ *
+ * 用法：airmini_pull <BT_ADDR> [PAIRING_CODE]
+ *   配對碼是憑證，只從 argv[2] 或環境變數 AIRMINI_PIN 取得，不要寫進檔案。
+ *   已有 master_pair_key.json 時可免配對重連（見 references/airmini-access.md）。
  */
 #include "airmini/airmini.h"
 #include "airmini/crypto.h"
@@ -136,8 +140,10 @@ static void on_notify(void *u, const char *method, const char *json) {
 }
 
 int main(int argc, char **argv) {
-    const char *addr = argc > 1 ? argv[1] : "<BT_ADDR>";
-    const char *pin  = argc > 2 ? argv[2] : getenv("AIRMINI_PIN", "");
+    const char *addr = argc > 1 ? argv[1] : getenv("AIRMINI_ADDR");
+    const char *pin  = argc > 2 ? argv[2] : getenv("AIRMINI_PIN");
+    if (!addr) addr = "<BT_ADDR>";
+    if (!pin)  pin  = "";   /* 配對碼是憑證：只從 argv 或 AIRMINI_PIN 取得 */
 
     struct sockaddr_rc sa = {0};
     sa.rc_family = AF_BLUETOOTH;
