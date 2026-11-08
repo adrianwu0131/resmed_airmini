@@ -257,6 +257,11 @@ export AIRMINI_PIN=<PAIRING_CODE>              # 機身貼紙配對碼（僅首�
 export AIRMINI_KEYFILE=pull/master_pair_key.json
 export AIRMINI_OUT=pull/stream_data.jsonl
 export AIRMINI_CHANNELS=5                      # 資料通道（ch6 是 iAP，勿用）
+
+# AirSense 側（SD 卡解析與彙整庫）
+export CPAP_DB=/path/to/cpap_data.db          # 兩台機器的彙整庫
+export CPAP_SD_DUMP=/path/to/sd_dump          # SD 卡 dump 根目錄
+export CPAP_FONT=/path/to/NotoSansTC.ttf      # 中文字型（圖表用）
 ```
 
 不設 `AIRMINI_PIN` 時腳本不做 PIN 配對，只走金鑰直連——金鑰已存在即可。

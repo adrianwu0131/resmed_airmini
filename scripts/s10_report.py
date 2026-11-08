@@ -7,6 +7,7 @@
 NAP_MIN、Pages 目標值、午睡檔名）對應一份已驗證的 2026-11-02 AirView 報告——
 換新報告/新機器時改這些常數，跑完對照 ✓/Δ 表。
 """
+import os
 import csv
 import datetime as dt
 import math
@@ -18,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from resmed_s10 import EDF, decode_annotations, parse_str
 
 # ---------------- Fixture（對應 2026-11-02 報告；其他報告請調整）----------------
-SD = Path(sys.argv[1] if len(sys.argv) > 1 else '/path/to/sd_dump')
+SD = Path(sys.argv[1] if len(sys.argv) > 1
+              else os.environ.get('CPAP_SD_DUMP', '/path/to/sd_dump'))
 CUT = dt.datetime(2026, 11, 2, 9, 0)      # 報告產生時刻；此後結束的 session 不計
 W_START, W_END = dt.date(2026, 7, 26), dt.date(2026, 11, 1)   # 合規窗（99 天）
 NAP_MIN = 130                             # 11/01 進報告的午細 session 分鐘數

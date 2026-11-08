@@ -15,12 +15,13 @@
 陷阱內建：s10_events.session 與 s10_pld_2s.session 的檔名時間戳會差數秒
 （同一物理 session），以 ±90 秒容差對位；事件時刻 = 事件自身 session 起點 + onset_s。
 """
+import os
 import argparse
 import sqlite3
 from datetime import datetime as dt, timedelta
 
-DB = '/path/to/cpap_data.db'
-FONT = '/path/to/NotoSansTC.ttf'
+DB = os.environ.get('CPAP_DB', '/path/to/cpap_data.db')
+FONT = os.environ.get('CPAP_FONT', '/path/to/NotoSansTC.ttf')
 KIND = {'Hypopnea': ('#f2a93b', '低通氣'), 'Central Apnea': ('#c3407e', '中樞'),
         'Obstructive Apnea': ('#4a78c2', '阻塞'), 'Apnea': ('#8a9098', '不明')}
 MKIND = {'CentralApneaEnd': ('#c3407e', '中樞'), 'HypopneaEnd': ('#f2a93b', '低通氣'),
