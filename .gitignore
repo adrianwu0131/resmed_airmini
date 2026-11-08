@@ -1,0 +1,41 @@
+# 憑證與本機狀態——絕不進版控
+pull/
+*.jsonl
+master_pair_key.json
+datetime.json
+settings.json
+metrics.json
+history.json
+logged_data.json
+*.db
+*.db-shm
+*.db-wal
+*.so
+*.o
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# 編譯產物
+airmini_pull
+airmini_live
+
+# 圖表輸出
+*.png
+!docs/*.png
+
+# 編輯器 / 系統
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# 環境
+.env
+.env.*
+!.env.example
