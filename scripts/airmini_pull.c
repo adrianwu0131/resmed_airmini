@@ -69,8 +69,6 @@ static void out_file(const char *tag, const char *json) {
     if (f) { fputs(json, f); fputc('\n', f); fclose(f); }
 }
 
-static void issue_logged_batch(void);
-
 static void on_result(void *user, airmini_status st, const char *result, const char *error) {
     const char *tag = (const char *)user;
     pending--;
