@@ -99,7 +99,8 @@ metadata:
   免 PIN 重連才需要 `airmini_open_session(masterPairKey)`。
   StartStream 一律用 `airmini_start_stream()`，不要 raw `airmini_call()` 手寫 params
   （漏 `sampleIntervalMs`/`reportIntervalMs` → 裝置回 -32600 Invalid Request）。
-  現行抓取器：`~/airmini/s10/airmini_capture2.py`（有金鑰免 PIN 免按鈕直連＋自動重連）。
+  現行抓取器：`~/airmini/s10/airmini_capture2.py`（有金鑰免 PIN 免按鈕直連＋自動重連）；
+  「等視窗→一次做完全史+串流+保活」的預設工具是 `scripts/ready_capture.py`。
   藍牙抓取寫到 `~/airmini/s10/pull/`（`logged_data.json` 971KB + settings/pair 等），
   `logged_data.json` 是 **JSONL**（每行一個 JSON-RPC 物件）：逐行 `json.loads`，
   整檔 `json.load` 會 Extra data 直接崩。
@@ -219,6 +220,9 @@ metadata:
   工作副本 `~/airmini/s10/airmini_capture2.py`
 - `scripts/ingest_stream.py` — 串流 jsonl → `am_stream_wave` 表（一報多樣本要按
   `startTime + i×interval_ms` 展開，否則七成資料被 UNIQUE 當重複丟棄；INSERT OR IGNORE 冪等）
+- `scripts/ingest_logged.py` — GetLoggedData 全史 jsonl → 分鐘表（am_leak_p1min/
+  am_press_p1min）＋逐事件表 am_respiratory_events2；INSERT OR IGNORE 冪等，
+  機器時鐘偏移用 `CPAP_OFFSET`（秒）校正、L/s→L/min ×60 內建
 - `scripts/plot_stream.py` — 串流三通道波形圖（跨時段插 NaN 斷線、中文字型用系統 .ttc）
 - `scripts/probe_intervals.py` — 探測裝置實際接受的 sampleIntervalMs（一次連線內依序試
   多組，回報裝置回的 intervalMs 與每報樣本數；探測前先停掉自己的重試迴圈）
@@ -234,9 +238,9 @@ metadata:
   （GetLoggedData 全史 + StartStream 100Hz），因為視窗是「用完即收」
 - `scripts/session_all2.py` — **咬上就不放**（2026-11-27）：拉全史 + 100Hz 串流
   + 每 55 秒保活，**連線不關**（關閉很可能正是槽位被收回的原因）
-- `scripts/ready_capture.py` — **一次性完整抓取**（2026-11-27 下午，可重複測試）：
-  60/90s 等視窗 → ch5 → session → 拉全史 → 100Hz 串流 → 55s 保活，
-  **追加寫入**（重複抓不衝突；重複已實測兩次成功）
+- `scripts/ready_capture.py` — **一次性完整抓取**（2026-11-27 武裝版）：**先武裝再按鍵**，
+  3s×25 → 15s×20 → 60/90 輪詢；咬上即拉全史 + 100Hz + 55s 保活、**連線不關**、
+  追加寫入不衝突。**一次成功配方：助手武裝好 → 使用者才按一下鈕**
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
   握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。

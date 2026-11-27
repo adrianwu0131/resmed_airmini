@@ -1,6 +1,6 @@
 ## 直連 AirMini 拉量測資料：libairmini + Bluetooth Classic RFCOMM
 
-狀態：**端到端已驗證（2026-11-06）**——配對（PIN 1216）→ 全史 GetLoggedData 拉取成功：
+狀態：**端到端已驗證（2026-11-06）**——配對（PIN <PAIRING_CODE>）→ 全史 GetLoggedData 拉取成功：
 pull/logged_data.json ≈1MB（88 夜完整時序＋呼吸事件，自 2026-05-07 起），
 masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_session(am, storedKey)`
 成功（免 PIN、免重新配對）。**金鑰有效期＝機器當前配對**：任何一次全新 PIN 配對
@@ -28,7 +28,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 
 - 走 **Bluetooth Classic RFCOMM/SPP，channel 5**，不是 BLE（官方 app 反編譯證實：
   `listenUsingRfcommWithServiceRecord`，無任何 GATT 呼叫；iOS 走 MFi iAP2 `com.resmed.rpc`）。
-- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 1216），非動態 PIN。
+- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 <PAIRING_CODE>），非動態 PIN。
   配對成功回 `masterPairKey`（64 hex，持久化）+ `sessionKey`；之後用
   `airmini_open_session(am, masterPairKey)` 免 PIN 重連。
 - 資料通道：AES-256-CBC + JSON-RPC（`[u16 LE 長度][JSON]` 加密後走 vcid 0x0397）。
@@ -92,7 +92,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 gcc -O2 -Wall -I include -I /home/adrian/miniconda3/include -DAIRMINI_WITH_OPENSSL \
   src/*.c driver_pull.c -o airmini_pull \
   -L /home/adrian/miniconda3/lib -lssl -lcrypto -Wl,-rpath,/home/adrian/miniconda3/lib
-timeout 290 ./airmini_pull <BT_ADDR> 1216   # addr passkey
+timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 ```
 - 驅動 `scripts/airmini_pull.c`：RFCOMM ch5（自定 `sockaddr_rc`，免 BlueZ 頭）→
   `airmini_pair(PIN)` → 回呼鏈 `open_session` → `version/datetime/metrics/settings/history`
@@ -133,6 +133,9 @@ timeout 290 ./airmini_pull <BT_ADDR> 1216   # addr passkey
   運轉中穩定走時；長時間斷電後首夜時戳仍合理＝開機後被外部對時（手機 app 接上時，
   機理未證）。`am_events` 同批可見 2012-01-01 假基準而分鐘表全為 2026 合理值
   ⇒ **兩張表時鐘基準不同，跨表拉時間軸不要互推**。
+  事件層也夾帶假基準列（時間落在該機資料起點之前的 PowerOff 殘留）——那是時鐘
+  未設定的殘留，不是機器故障；核對 AHI/事件時先排除「早於首次治療日」的列，
+  過濾條件寫在查詢裡（如 `ts >= 日期起點`），不要逐筆追查。
 - **機上無對時方法可尋**：RPC manifest 無 SetTime/SyncTime，GetDateTime 只讀
   ——基準錯了只能在我方校正層修（offset/夜別錨點），不要在協定裡找對時指令。
   **offset 是恆定值非持續漂移**：兩次隔日獨立量測（GetDateTime vs host UTC）＝
@@ -385,7 +388,17 @@ timeout 290 ./airmini_pull <BT_ADDR> 1216   # addr passkey
   （100Hz 197,337／25Hz 8,790／1Hz 1,509）、am_leak_p1min 43,211、
   am_press_p1min 43,211、am_respiratory_events2 3,914；
   涵蓋 **2026-11-07 → 2026-11-27**（機器時間 2026-11-27T06:19:33Z）。
-- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濫、120s 無 StreamData 即判斷斷流）、
+- **【2026-11-27 視窗一次性＋一次成功配方】**視窗像「一次性門票」：按鍵後約
+  1~2 分鐘內可連（errno 104 後 61 秒仍連上成功）；但**任何「連上就關」的測試
+  會提前收掉門票**（單發試連成功後 21 秒即 112——那輪三次按鍵才成功的直接原因，
+  其中第一次按鍵就是被助手的測試探測吃掉的）。所以：**絕不做「只試一下」的連線**；
+  想抓之前先武裝 `ready_capture.py`（3s×25 burst → 15s×20 → 60/90），武裝好
+  **使用者才按一下鈕**——3 秒內咬上、一次成功。
+- **修正「密集重試」教訓的歸因**：一晚 100+ 次 5 秒重試全敗的真正原因是
+  「沒按鍵、視窗根本不會開」，不是重試本身塞死介面；按鍵後 3 秒級 burst
+  實測可靠命中。鐵則調整為：**無按鍵的長時間狂試沒有意義（不是節奏問題）；
+  任何 connect 都要打算做完整握手（單發試連會浪費一次按鍵）。**
+- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濾、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
 - **金鑰直連已在真機完整驗證（2026-11-07 17:58）**：`airmini_open_session(mpk)` 回

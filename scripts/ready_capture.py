@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""ready_capture.py — 一次性完整抓取（可重複測試用）
+"""ready_capture.py — 一次性完整抓取（武裝式爆發輪詢版，2026-11-27 下午改）
 
-單一程序、單一輪詢器、無槽位爭用。按一下 Bluetooth 鈕後自動做完：
-  1. ch5 → open_session(masterPairKey)
-  2. GetLoggedData 全史（追加寫入 pull/logged_data.jsonl）
-  3. StartStream 100Hz（追加寫入 pull/stream_data.jsonl）
-  4. 每 55 秒保活，連線不關
+核心規則（當日實測根據）：
+  1. 視窗是「一次性門票」——按鍵後約 1~2 分鐘內可連；但**任何「連上就關」的
+     測試會提前收掉門票**（單發試連成功後 21 秒即 112 的實錄）。所以絕不做
+     「只試一下」的連線——每個 connect 都要打算做完整握手與抓取。
+  2. 沒按鍵時視窗根本不會開（一晚 100+ 次重試全敗的真正原因，不是重試塞死
+     介面）；**按鍵後 3 秒級 burst 是可靠咬上的關鍵**（實測一次命中）。
+  3. errno 104（Connection reset）＝視窗開著、裝置拒經 → 立刻 2 秒級連續重試，
+     常在下一發命中。
+  4. 咬上後：金鑰直連 → GetLoggedData 全史 → StartStream 100Hz → 55s 保活，
+     **連線不關**（關閉很可能就是槽位被收回的原因）。
+
+武裝時程：3s×25（≈90 秒內必咬上）→ 15s×20（後續 5 分鐘）→ 60/90 輪替。
 
 用法：
-    python3 ready_capture.py --hours 1           # 串流跑 1 小時
-    python3 ready_capture.py --tries 30          # 最多試 30 輪（60/90s 間隔）
+    python3 ready_capture.py --hours 1     # 咬上後串流 1 小時
+    python3 ready_capture.py --tries 90    # 輪詢上限
+
+配合方式：先跟助手說「要抓」（重新武裝）→ **按一下 Bluetooth 鈕** →
+3 秒內咬上 → 全自動做完，不需要再按第二次。
 """
 import ctypes
 import json
@@ -44,9 +54,9 @@ class Config(Structure):
 lib.airmini_create.argtypes = [POINTER(Config)]
 lib.airmini_open_session.argtypes = [c_void_p, c_char_p, RESP_CB, c_void_p]
 lib.airmini_get_logged_data.argtypes = [c_void_p, POINTER(c_char_p), c_size_t,
-                                         c_char_p, RESP_CB, c_void_p]
+                                        c_char_p, RESP_CB, c_void_p]
 lib.airmini_start_stream.argtypes = [c_void_p, POINTER(c_char_p), c_size_t,
-                                      c_int, c_int, RESP_CB, c_void_p]
+                                     c_int, c_int, RESP_CB, c_void_p]
 lib.airmini_call.argtypes = [c_void_p, c_char_p, c_char_p, RESP_CB, c_void_p]
 lib.airmini_feed.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t]
 lib.airmini_set_notify.argtypes = [c_void_p, NOTIFY_CB, c_void_p]
@@ -59,7 +69,6 @@ STREAM_TYPES = (c_char_p * 3)(b'MaskPressure-100hz',
                               b'InspiratoryPressure-50hz',
                               b'Leak-TwoSecond')
 EPOCH = '2008-01-01T00:00:00.000Z'
-WAITS = [60, 90]
 
 # 單一輸出檔柄，用 O_APPEND 讓多筆寫入不互踩
 FLOG = None
@@ -101,9 +110,9 @@ resp_ref = RESP_CB(on_result)
 
 
 def on_notify(user, method, js):
+    global FLOG, FSTR
     m = (method or b'').decode(errors='ignore')
     j = (js or b'{}').decode(errors='ignore')
-    global FLOG, FSTR
     if m == 'LoggedData':
         try:
             if FLOG is None:
@@ -146,7 +155,7 @@ def keepalive():
 
 
 def run_once(stream_hours):
-    """一次完整抓取；回傳 True 表示有咬上並進入串流。"""
+    """一次完整抓取；回傳 (是否咬上, 引發的連線 errno 或 None)。"""
     try:
         s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
                           socket.BTPROTO_RFCOMM)
@@ -157,7 +166,7 @@ def run_once(stream_hours):
         log(f'RFCOMM ch{CHANNEL} 已連線 ✓')
     except OSError as e:
         log(f'連線失敗 {e}')
-        return False
+        return False, getattr(e, 'errno', None)
 
     cfg = Config(send=send_ref, send_user=None,
                  crypto=lib.airmini_crypto_openssl(), log=None, log_user=None)
@@ -180,11 +189,11 @@ def run_once(stream_hours):
             continue
         except OSError as e:
             log(f'讀取結束 {e}')
-            return True  # 連上也被 reset，仍算「咬上」
+            return True, None  # 連上也被 reset，仍算「咬上」
 
     if not S['session']:
         log('★ 沒 sessionKey → 金鑰失效，重新配對')
-        return False
+        return False, None
 
     log('session ✓')
     sigs = (c_char_p * len(SIGNALS))(*SIGNALS)
@@ -198,7 +207,7 @@ def run_once(stream_hours):
     deadline = time.time() + stream_hours * 3600
     last = time.time()
     next_ka = time.time() + KEEPALIVE
-    log(f'保持連線 {stream_hours} 小時（保活每 {KEEPALIVE}s）')
+    log(f'保持連線 {stream_hours} 小時（保活每 {KEEPALIVE}s）——不關')
     while time.time() < deadline:
         try:
             d = s.recv(8192)
@@ -211,7 +220,7 @@ def run_once(stream_hours):
         except socket.timeout:
             now = time.time()
             if now - last > 180:
-                log('180 秒無資料')
+                log('180 秒無資料，判定失效')
                 break
             if now >= next_ka:
                 keepalive()
@@ -223,7 +232,10 @@ def run_once(stream_hours):
             log(f'RPC 錯：{S["err"]}')
             break
     log(f'結束：LoggedData {S["lg"]} 筆、StreamData {S["st"]} 筆')
-    return True
+    return True, None
+
+
+RESET = {'lg': 0, 'st': 0, 'hb': 0, 'ka': 0, 'session': False, 'err': None}
 
 
 def main():
@@ -231,23 +243,35 @@ def main():
     hours = 1.0
     if '--hours' in args:
         hours = float(args[args.index('--hours') + 1])
-    tries = 30
+    tries = 90
     if '--tries' in args:
         tries = int(args[args.index('--tries') + 1])
 
-    log(f'待機獵手啟動：等視窗開（60/90s 輪替，最多 {tries} 輪）、'
-        f'咬上後串流 {hours} 小時')
+    # 武裝時程：按鍵後視窗約 1~2 分鐘
+    waits = ([3.0] * 25 + [15.0] * 20 + [60.0, 90.0] * 20)[:tries]
+    log(f'★ 武裝完成：3s×25 → 15s×20 → 60/90；裝置可以按了（串流 {hours}h）')
     ok = 0
-    for i in range(tries):
-        S.update({'lg': 0, 'st': 0, 'hb': 0, 'ka': 0, 'session': False,
-                  'err': None})
-        if run_once(hours):
-            ok += 1
+    for i, w in enumerate(waits):
+        S.update(RESET)
+        good, eno = run_once(hours)
+        if good:
+            ok = 1
             break
-        w = WAITS[i % len(WAITS)]
-        log(f'→ 等 {w}s 再試（{i + 1}/{tries}）')
+        if eno == 104:
+            # 視窗開著但裝置拒經 → 立刻 2 秒級連續重試（實證：下一發常中）
+            log('104＝視窗開著！立刻連續重試')
+            for _ in range(12):
+                S.update(RESET)
+                time.sleep(2)
+                good, _ = run_once(hours)
+                if good:
+                    ok = 1
+                    break
+            if ok:
+                break
+        log(f'→ 等 {w:.0f}s')
         time.sleep(w)
-    log(f'完成（咬上 {ok} 次）')
+    log(f'完成（咬上 {ok}）')
     return 0 if ok else 1
 
 
