@@ -17,8 +17,8 @@ from reportlab.pdfgen import canvas
 pdfmetrics.registerFont(TTFont('TC', os.environ.get('AIRMINI_FONT', '/usr/share/fonts/truetype/noto/NotoSansTC.ttf')))
 pdfmetrics.registerFont(TTFont('TCB', os.environ.get('AIRMINI_FONT', '/usr/share/fonts/truetype/noto/NotoSansTC.ttf')))
 
-AV = Path('/home/adrian/.hermes/cache/scratch/avview')
-OUTDIR = Path('/home/adrian/airmini/報告')
+AV = Path(os.environ.get('AIRMINI_CHART_DIR', 'charts'))
+OUTDIR = Path(os.environ.get('AIRMINI_REPORT_OUT', '.'))
 OUTDIR.mkdir(parents=True, exist_ok=True)
 
 NAVY = '#2e5e8e'

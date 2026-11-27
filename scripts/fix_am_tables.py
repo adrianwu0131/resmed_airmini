@@ -41,7 +41,7 @@ def _naive(machine_s):
 def utc_s(machine_s):
     return (_naive(machine_s) + DELTA).isoformat(timespec='seconds')
 
-con = sqlite3.connect('/home/adrian/airmini/cpap_data.db', timeout=60)
+con = sqlite3.connect(os.environ.get('CPAP_DB', 'cpap_data.db'), timeout=60)
 con.execute('PRAGMA busy_timeout=60000')
 cur = con.cursor()
 
