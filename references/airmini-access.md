@@ -306,11 +306,13 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
     masterPairKey → **立刻回寫 key 檔** → 同步給其他機器（pi5）→ 再驗證直連。
   - **重新配對後舊金鑰要一併清掉**：pi5 等其他機器上的 key 檔也要換，
     否則那些機器會繼續拿舊金鑰去撞 -11005。
-  - **`SubscribeEvent` 的參數名是猜的**：App 日誌不記參數內容，只記 count=4/3。
-    我依 NOTIFICATION 事件名湊的 4 個（FGState / SystemError / RecoverableError /
-    TherapyState）**未經驗證**，其中 `TherapyState` 在 App 日誌中不存在。
-    下次連線時要嘛把這步拿掉驗證（先確認它不是 -11005 的成因），
-    要嘛從 App 抓真正的參數。
+  - **`SubscribeEvent` 的參數名仍未驗證（2026-11-27 更正）**：App 的 BLE 日誌
+    **只記訂閱的數量**（3 或 4，視時機），不記事件名；唯一可證的是 App 實際
+    **收到**過的 NOTIFICATION 共 4 種：`FGState`（30 次）／`RecoverableError`（13 次）／
+    `SystemError`（13 次）／`Heartbeat`（4,615 次，每 60 秒一筆）。
+    先前程式裡湊的 `TherapyState` 在 App 日誌出現 **0 次**——明顯是錯的，已移除。
+    現在只送 **3 個確實存在**的名（Heartbeat 由裝置主動送，不需訂閱）。
+    **仍是 UNVERIFIED**：真實清單要靠實機送不同組合、看裝置回什麼才知。
 - **【2026-11-27 視窗行為確認】SPP 視窗是「用完即收」**：一次連線內做完
   GetLoggedData + StartStream 後，只要連線一斷（即使是我方主動關），
   機器就把 SPP 槽位收回 → 立刻再連會得到 `Host is down`。
@@ -332,10 +334,10 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
     然後才 GetSessionKey 開 session。**這不是錯誤，是 App 的探測行為**——
     日誌裡每次 INBOUND_CONNECTION 後都是 `OUT 1 StartStream → TIMEOUT`。
     我們不必模仿這個多餘步驟，但要知道 **StartStream timeout ≠ 握手失敗**。
-  - **`SubscribeEvent` 一定要送**：App 在 GetSessionKey 之後立刻送，
-    參數是 4 個事件名（App 日誌不記參數內容，只記 count=4/3）。
-    libairmini **沒有** `airmini_subscribe_event()` 公開 API 與 params builder，
-    要用 `airmini_call(am, "SubscribeEvent", params_json, cb, user)` 自己組。
+  - **`SubscribeEvent` 一定要送**：App 在 GetSessionKey 之後立刻送（App 日誌顯示
+    訂閱數 3 或 4，視時機）。libairmini **沒有** `airmini_subscribe_event()`
+    公開 API 與 params builder，要用
+    `airmini_call(am, "SubscribeEvent", params_json, cb, user)` 自己組。
   - **App 的連線幾乎都發生在晚上 23:00～隔天 09:30**（戴機睡覺時段），
     而且多數是 `INBOUND_CONNECTION`＝**機器主動撥入 App**。
     這解釋了「待機時 SPP 視窗難開」：**機器在治療中才會主動維持藍牙連線**。

@@ -142,13 +142,19 @@ def send_rpc(method, params=None):
 
 
 def subscribe_events():
-    """App 在開 session 後立刻 SubscribeEvent（4 個事件）。
+    """App 在開 session 後立刻 SubscribeEvent。
 
-    事件名取自 protocol.h 的常數值；App 日誌顯示參數是 4 個事件的陣列。
-    這一步很可能是「不被裝置閒置踢線」的關鍵。
+    **參數內容尚未驗證**（2026-11-27）：App 的 BLE 日誌只記訂閱的**數量**
+    （3 或 4，視時機），不記事件名。唯一可證的是 App 實際**收到**過的
+    NOTIFICATION 共 4 種：FGState / RecoverableError / SystemError / Heartbeat。
+
+    先前這裡湊了 TherapyState——在 App 日誌出現 **0 次**，明顯是錯的。
+    現在改成只用**確實存在**的三種（Heartbeat 是裝置主動送的，不需訂閱）。
+    **仍標記為 UNVERIFIED**：真實清單要靠實機送不同組合、看裝置回什麼才知。
+    下次連線時可試不同組合比對 App 的行為。
     """
-    ev = json.dumps(["FGState", "SystemError", "RecoverableError",
-                     "TherapyState"], separators=(',', ':'))
+    ev = json.dumps(["FGState", "SystemError", "RecoverableError"],
+                    separators=(',', ':'))
     S['tag'] = 'subscribe'
     lib.airmini_call(S['am'], b'SubscribeEvent', ev.encode(), resp_ref, None)
 
