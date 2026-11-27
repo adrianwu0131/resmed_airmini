@@ -240,7 +240,11 @@ metadata:
   + 每 55 秒保活，**連線不關**（關閉很可能正是槽位被收回的原因）
 - `scripts/ready_capture.py` — **一次性完整抓取**（2026-11-27 武裝版）：**先武裝再按鍵**，
   3s×25 → 15s×20 → 60/90 輪詢；咬上即拉全史 + 100Hz + 55s 保活、**連線不關**、
-  追加寫入不衝突。**一次成功配方：助手武裝好 → 使用者才按一下鈕**
+  追加寫入不衝突；**25 秒無串流 → 重送 StartStream**（對抗裝置串流殘留 TTL）。
+  **一次成功配方：助手武裝好 → 使用者才按一下鈕**
+- `scripts/capture_rounds.py` — **多輪穩定性驅動器**（2026-11-27）：
+  N 輪 × M 分鐘、輪間 --cooldown（預設 120s 避開串流殘留 TTL）；
+  6/6 咬上、每輪一按的實測統計落地 `pull/capture_rounds.jsonl`
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
   握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。

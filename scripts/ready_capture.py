@@ -204,9 +204,14 @@ def run_once(stream_hours):
     S['tag'] = 'stream'
     lib.airmini_start_stream(S['am'], STREAM_TYPES, 3, 10, 50, resp_ref, None)
 
+    # 裝置端有「串流殘留 TTL（約 180s）」：上一條連線的串流剛結束時，
+    # 新連線的 StartStream 可能收不到任何 StreamData（實測 2026-11-27 多輪）。
+    # 對策：25 秒內沒有串流資料就重送 StartStream，最多 3 次。
     deadline = time.time() + stream_hours * 3600
     last = time.time()
     next_ka = time.time() + KEEPALIVE
+    stream_check = time.time() + 25.0
+    resends = 0
     log(f'保持連線 {stream_hours} 小時（保活每 {KEEPALIVE}s）——不關')
     while time.time() < deadline:
         try:
@@ -219,6 +224,18 @@ def run_once(stream_hours):
             lib.airmini_feed(S['am'], b, len(d))
         except socket.timeout:
             now = time.time()
+            if not S['st'] and now >= stream_check:
+                if resends < 3:
+                    resends += 1
+                    S['tag'] = 'stream'
+                    log(f'25 秒內無串流資料 → 重送 StartStream（{resends}/3；'
+                        f'可能是上一段串流的殘留 TTL）')
+                    lib.airmini_start_stream(S['am'], STREAM_TYPES, 3, 10, 50,
+                                             resp_ref, None)
+                    stream_check = now + 25.0
+                elif now - last > 180:
+                    log('180 秒無資料，判定失效')
+                    break
             if now - last > 180:
                 log('180 秒無資料，判定失效')
                 break

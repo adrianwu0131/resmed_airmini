@@ -1,6 +1,6 @@
 ## 直連 AirMini 拉量測資料：libairmini + Bluetooth Classic RFCOMM
 
-狀態：**端到端已驗證（2026-11-06）**——配對（PIN <PAIRING_CODE>）→ 全史 GetLoggedData 拉取成功：
+狀態：**端到端已驗證（2026-11-06）**——配對（PIN 1216）→ 全史 GetLoggedData 拉取成功：
 pull/logged_data.json ≈1MB（88 夜完整時序＋呼吸事件，自 2026-05-07 起），
 masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_session(am, storedKey)`
 成功（免 PIN、免重新配對）。**金鑰有效期＝機器當前配對**：任何一次全新 PIN 配對
@@ -28,7 +28,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 
 - 走 **Bluetooth Classic RFCOMM/SPP，channel 5**，不是 BLE（官方 app 反編譯證實：
   `listenUsingRfcommWithServiceRecord`，無任何 GATT 呼叫；iOS 走 MFi iAP2 `com.resmed.rpc`）。
-- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 <PAIRING_CODE>），非動態 PIN。
+- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 1216），非動態 PIN。
   配對成功回 `masterPairKey`（64 hex，持久化）+ `sessionKey`；之後用
   `airmini_open_session(am, masterPairKey)` 免 PIN 重連。
 - 資料通道：AES-256-CBC + JSON-RPC（`[u16 LE 長度][JSON]` 加密後走 vcid 0x0397）。
@@ -39,7 +39,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 - 正確入口：控制器**連線快取**——`bluetoothctl devices` 列出後逐台
   `bluetoothctl info <addr>`，認兩個特徵：**Serial Port UUID 00001101-…** 與
   ResMed vendor service `00000000-deca-fade-deca-deafdecacaff`；名稱形如 `ResMed <序號尾>`。
-- 已驗證位址：`<BT_ADDR>`（"ResMed <MODEL>"）。MAC 不印在背面標籤上，別浪費時間找。
+- 已驗證位址：`40:30:59:D4:25:82`（"ResMed 839182"）。MAC 不印在背面標籤上，別浪費時間找。
 
 ### 可連線窗口（連不上時的排查順序，2026-11-07 官方手冊＋實測修正）
 
@@ -92,7 +92,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 gcc -O2 -Wall -I include -I /home/adrian/miniconda3/include -DAIRMINI_WITH_OPENSSL \
   src/*.c driver_pull.c -o airmini_pull \
   -L /home/adrian/miniconda3/lib -lssl -lcrypto -Wl,-rpath,/home/adrian/miniconda3/lib
-timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
+timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
 ```
 - 驅動 `scripts/airmini_pull.c`：RFCOMM ch5（自定 `sockaddr_rc`，免 BlueZ 頭）→
   `airmini_pair(PIN)` → 回呼鏈 `open_session` → `version/datetime/metrics/settings/history`
@@ -209,7 +209,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   `CDLL('libairmini.so')` 裸名載入失敗（dlopen 不搜 cwd）——用絕對路徑或
   LD_LIBRARY_PATH。
 - **【2026-11-07 19:00 重大修正】ch5 是資料通道，但 SPP 視窗是間歇性的；ch6 是 iAP 通道**：
-  - 用 `sdptool browse <BT_ADDR>` 探索會看到**兩個** RFCOMM 通道：
+  - 用 `sdptool browse 40:30:59:D4:25:82` 探索會看到**兩個** RFCOMM 通道：
     **ch6 = "Wireless iAP"**（UUID `00000000-deca-fade-deca-deafdecacaff`，Apple iAP 用）、
     **ch5 = Serial Port**（UUID `00001101-…`，**這才是 libairmini 的資料通道**，
     歷史所有成功串流都在 ch5）。**不要看到 SDP 列出 ch6 就去用 ch6**——
@@ -398,7 +398,15 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   「沒按鍵、視窗根本不會開」，不是重試本身塞死介面；按鍵後 3 秒級 burst
   實測可靠命中。鐵則調整為：**無按鍵的長時間狂試沒有意義（不是節奏問題）；
   任何 connect 都要打算做完整握手（單發試連會浪費一次按鍵）。**
-- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濾、120s 無 StreamData 即判斷斷流）、
+- **【2026-11-27 多輪實測：6/6 咬上、每輪一按】**`capture_rounds.py` 六輪各 3 分鐘：
+  咬上率 100%（每輪武裝後按一下，3~10 秒內連上）；串流呈現**交替現象**——
+  第 1/3/5 輪 0 筆、第 2/4/6 輪全量（3,376/3,343/3,599）＝**裝置端串流殘留
+  TTL（約 180s）**：上一條連線的串流剛結束時，新連線的 StartStream 收不到
+  資料，與 App 日誌的 180 秒痕跡一致。對策已內建：`ready_capture.py`
+  25 秒無串流 → 重送 StartStream（最多 3 次）；`capture_rounds.py --cooldown 120`。
+  另證實 **GetLoggedData 增量行為**：重複拉取只送少量新資料（21/4/3 筆），
+  同一時段重拉約 788 筆固定塊——不會重複搬全史。
+- **未測/待驗證**：長連線持續性（HeartBeat 被庫過濻、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
 - **金鑰直連已在真機完整驗證（2026-11-07 17:58）**：`airmini_open_session(mpk)` 回
