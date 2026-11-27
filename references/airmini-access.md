@@ -50,7 +50,11 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
   燈暗（一般待機）也開窗，但窗口約數分鐘一次；機器端一次僅一條連線，斷線後有 ~2 分冷卻期。
 - errno 辨識：`112 EHOSTDOWN`＝BT 關閉/無 SPP 可接（含飛航模式）；`16 EBUSY`＝設備端
   仍掛著前一條未收尾的連線（連線中的行程被 kill 會留這狀態，device 端數十秒~數分鐘自清；**關開一次電源立即清**）；
-  `114 EALREADY`＝本機殘留 socket 狀態（非機器問題），60 秒以上冷卻自消。
+  `114 EALREADY`＝本機殘留 socket 狀態（非機器問題），60 秒以上冷卻自消；
+  `104 ECONNRESET`＝**對端有回應但拒絕＝視窗開著**——立刻 2 秒級連續重試，
+  12 發內通常命中（這是可咬上的訊號，不是失敗）；
+  `br-connection-page-timeout`（bluetoothctl）＝本機 ACL 層就建不上，與機器端無關。
+  （`112`＝對端視窗沒開或 BT 停用——等待中、正常，不該因它加快節奏。）
 - **BlueZ 卡死的復原（實測）**：連續 `Host is down` 但 `bluetoothctl info` 顯示
   `Connected: no`、RSSI 正常（-70dBm）＝**本機 BlueZ 的 stale connection 狀態**，不是機器端。
   `bluetoothctl disconnect <addr>` 清掉 → `bluetoothctl connect <addr>` 回
@@ -83,13 +87,10 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
   InspiratoryPressure-50hz / Leak-TwoSecond；機器以 `StreamData` 通知回傳。**取樣率由
   `sampleIntervalMs` 決定**（實測 10＝真 100Hz、40＝25Hz、1000＝1Hz；映射見下方
   「sampleIntervalMs 就是實際取樣間隔」條），報告批節奏＝`reportIntervalMs`。
-- **連線穩定法（實測；2026-11-27 歸因修正）**：(a) **無按鍵時視窗根本不會開**——狂轟
-  全數 `Host is down`（一晚 100+ 次實錄），不是重試塞死介面；按鍵開窗後 3s burst
-  才咬得住；(b) 使用者按 Bluetooth 鈕進配對模式（閃藍）時 SPP 可被直接
-  connect，多次成功驗證；(c) 暗燈待機自然開窗機率極低（另一晚 486 試 0 中）——
-  要確定性就請使用者按鍵；(d) 掃描（inquiry）
-  後立即 connect 反而失敗；(e) pair 後**不必**再呼 open_session——pair 內部已開會話（見檔首開會話規則）；(f) StartStream
-  一律用 `airmini_start_stream()`，不要 raw `airmini_call()` 手寫 params（漏 interval 欄→-32600）。
+- **連線穩定法**：(a) 閃藍（配對模式）時 SPP 可被直接 connect，多次驗證；(b) 暗燈待機
+  自然開窗機率極低——要確定性就請使用者按鍵；(c) 掃描（inquiry）後立即 connect
+  反而失敗。無按鍵/按鍵的重試節奏規則見「可連線窗口」errno 表與「重試節奏分場景」
+  條；pair/open_session 見檔首；StartStream 見 -32600 分診——不再重複列。
 ```sh
 gcc -O2 -Wall -I include -I /home/adrian/miniconda3/include -DAIRMINI_WITH_OPENSSL \
   src/*.c driver_pull.c -o airmini_pull \
@@ -217,8 +218,9 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
     **ch5 = Serial Port**（UUID `00001101-…`，**這才是 libairmini 的資料通道**，
     歷史所有成功串流都在 ch5）。**不要看到 SDP 列出 ch6 就去用 ch6**——
     ch6 能連上但**不講我們的協定**（實測握手送 `RequestSession` 後 30 秒無任何回應）。
-  - **SPP 視窗間歇性開關**：待機時 ch5 會隨機開窗。實測 40 次輪詢：
-    `Host is down` 20 次、`Connection reset by peer` 5 次、**成功 2 次**。
+  - **SPP 視窗間歇性開關**：待機時 ch5 偶爾開窗（早期小樣本 40 輪 2 次；後續
+    更大樣本 486 輪 0 中——**待機自然開窗應視為接近零，要視窗請使用者按鍵**）。
+    通的瞬間常先看到 errno 104（視窗開著但裝置拒絕，立搶即中）。
     成功連上後對端會 **idle**（數秒內既不送資料也不關閉）＝可握手的狀態。
   - **通了之後絕對不要立刻 close()**：探測腳本「一通就關」會把寶貴的視窗浪費掉，
     而且**不關的話才 handshake 得成**。正確流程＝通了就**直接交棒給 libairmini 握手**。
@@ -360,69 +362,37 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   先送 EnterTherapy → 再 StartStream → 觀察 180 秒後視窗是否仍在。
   （注意：這會改變機器狀態，屬治療控制面，測試前要和使用者確認，
   且不應在無面罩佩戴時長時間停留於治療狀態。）
-- **【密集重試的兩面（2026-11-27 定案）】**：**無按鍵**的整夜密集重試（100+ 次、
-  5 秒間隔）全敗——是視窗根本沒開，不是介面被塞死；**按鍵開窗後** 3s burst
-  是唯一可靠咬法（6/6 輪、每輪一按、3~10 秒內連上）。無人值守等視窗用
-  `scripts/window_hunt.py`（60/75/90 輪替），使用者配合時用
-  `scripts/ready_capture.py`（武裝→按一下）。
-  診斷時也要分清兩種失敗：
-  - `Host is down`（errno 112）＝**對端 SPP 視窗沒開**（等待中，正常）
-  - `Connection reset by peer`（errno 104）＝對端在回應但拒絕（**視窗開著**！）
-    → 立刻重試通常就能成
-  - `br-connection-page-timeout`（bluetoothctl）＝本機 BlueZ 層的 ACL 都建不上
-- **【2026-11-27 策略修正】咬上之後「不要關連線」**：先前「抓完就 close()」——關閉很可能
-  **正是**裝置收回 SPP 槽位的原因（實測：12:59 咬上、13:00 關閉、之後 30 分鐘
-  100+ 次重試全失敗）。改成 `scripts/session_all2.py`：**咬上後拉全史 + 開 100Hz
-  串流 + 每 55 秒保活 + 連線不關**。若要讓槽位維持開著，就別主動斷。
-- **【2026-11-27 交叉驗證法】分清「對端沒回應」與「本機 BlueZ 有問題」**：
-  用**另一台機器**（pi5，獨立藍牙硬體、不同位置）試連同一台 AirMini：
-  兩台都連不上 → 對端沒在回應（機器沒廣播／沒開機）；只有本機連不上
-  → 本機 BlueZ 的問題（可用 disconnect→connect 復原）。本次 pi5 也連不上
-  （4 次全 timeout）→ 判定為對端狀態。
-  另注意 `Errno 16 Device or resource busy` 出現過一次＝**裝置端當時有東西在跑**
-  （可能它主動撥入），是值得注意的訊號。
-- **【2026-11-27 重複測試結果】同樣的腳本重複跑是順利的**：
-  今天下午同一支 `ready_capture.py` 連續兩次成功：
-  - 第一次：RFCOMM 連線 → open_session → sessionKey → GetLoggedData **4,575 筆** →
-    100Hz 串流 → 保活
-  - 第二次（14:31，按鈕再按一次）：**3 輪內第 3 次咬上**（前兩輪 Host is down
-    與 90 秒等待），LoggedData **+790 筆**、100Hz 串流 **+2,111 筆**、
-    **保活 55 秒正常回應**、連線持續 30 分鐘未關
-  - **追加寫入模式確認**：logged_data.jsonl 與 stream_data.jsonl 都是 append，
-    重複抓不會衝突（GetLoggedData 用 INSERT OR IGNORE 入庫，重複會被擋）
-- **資料庫規模（持續增長，入庫後 SELECT COUNT(*) 查當下值）**：am_stream_wave 由
-  多輪 100Hz 串流累積（每輪 3 分鐘 ≈ +33k 列；INSERT OR IGNORE 冪等、重複被擋）；
-  am_leak_p1min／am_press_p1min 43,211、am_respiratory_events2 3,914＝
-  機器保存的**全史**分鐘值與事件（至機器時間 11/25 22:00Z）。
-- **【2026-11-27 視窗一次性＋一次成功配方】**視窗像「一次性門票」：按鍵後約
-  1~2 分鐘內可連（errno 104 後 61 秒仍連上成功）；但**任何「連上就關」的測試
-  會提前收掉門票**（單發試連成功後 21 秒即 112——那輪三次按鍵才成功的直接原因，
-  其中第一次按鍵就是被助手的測試探測吃掉的）。所以：**絕不做「只試一下」的連線**；
-  想抓之前先武裝 `ready_capture.py`（3s×25 burst → 15s×20 → 60/90），武裝好
-  **使用者才按一下鈕**——3 秒內咬上、一次成功。
-- **修正「密集重試」教訓的歸因**：一晚 100+ 次 5 秒重試全敗的真正原因是
-  「沒按鍵、視窗根本不會開」，不是重試本身塞死介面；按鍵後 3 秒級 burst
-  實測可靠命中。鐵則調整為：**無按鍵的長時間狂試沒有意義（不是節奏問題）；
-  任何 connect 都要打算做完整握手（單發試連會浪費一次按鍵）。**
-- **【2026-11-27 多輪實測：6/6 咬上、每輪一按】**`capture_rounds.py` 六輪各 3 分鐘：
-  咬上率 100%（每輪武裝後按一下，3~10 秒內連上）；串流呈現**交替現象**——
-  第 1/3/5 輪 0 筆、第 2/4/6 輪全量（3,376/3,343/3,599）＝**裝置端串流殘留
-  TTL（約 180s）**：上一條連線的串流剛結束時，新連線的 StartStream 收不到
-  資料，與 App 日誌的 180 秒痕跡一致。對策已內建：`ready_capture.py`
-  25 秒無串流 → 重送 StartStream（最多 3 次）；`capture_rounds.py --cooldown 120`。
-  另證實 **GetLoggedData 增量行為**：重複拉取只送少量新資料（21/4/3 筆），
-  同一時段重拉約 788 筆固定塊——不會重複搬全史。
-- **【2026-11-27 run3：涓流停擺也會發生，補強改「無進展即重送」】**第 2 次穩定性
-  測試（run3）第 2 輪：104 立搶咬上後，串流只到 25 筆就停（涓流停擺），
-  而原本的「重送」只看「總數=0」而漏抓。已改為 **25 秒檢查一次成長：
-  沒成長就重送 StartStream（最多 3 次）**，同時記錄 StartStream 回應
-  （[stream-resp]）以便事後診斷；run3 第 2 輪之後（重啟驅動器）兩輪都是
-  全量 3,599 筆。另一個教訓：重送時 `S['tag']` 要重設為 'stream'，
-  否則回應會被當成其它 tag 處理。
-  **補強驗證準則**：cooldown>0 的 run 若每輪 `stream_msgs` 全 >0＝殘留 TTL
-  對策足夠（看 `pull/capture_rounds.jsonl`）；再現 0 → 冷卻拉到 ≥200s，
-  或以 ready_capture 的 StartStream 重送記錄為準（重送 3 次仍無資料＝
-  殘留未清，等 180s 後重試）。
+- **咬上後把整個抓取做進同一條連線，且不主動關線**：視窗「用完即收」——連線一斷
+  （連我方主動 close 算在內）機器即收走 SPP 槽位，立刻再連必得 112。所以全史＋
+  串流＋保活要同一 session 一次做完（`session_all2.py`／`ready_capture.py`：
+  咬上後串流到設定時長、55s 保活、不關線）。
+- **分「對端沒回應」與「本機 BlueZ 卡死」**：用**另一台機器**（pi5，獨立藍牙硬體、
+  不同位置）試連同一台 AirMini——兩台都失敗＝對端沒回應（沒開機/沒廣播）；
+  只有本機失敗＝BlueZ 問題（disconnect→connect 復原）。偶發 `16 EBUSY`＝
+  裝置端當時有東西在跑（可能它主動撥入），重試即可。
+- **【視窗＝一次性門票；一次成功配方】**按鍵開的視窗約 1~2 分鐘，且**任何「連上
+  立刻 close」的測試會提前收走它**（單發試連成功後 21 秒即 112）——所以**每個
+  connect 都要打算做完整握手，絕不做「只試一下」的連線**。想抓＝先武裝
+  `ready_capture.py`（3s×25 burst → 15s×20 → 60/90 遞增），武裝好使用者才按
+  一下鈕，3~10 秒內咬上；武裝中撞到 errno 104 不必改輪次，2 秒級連搶直接咬。
+  **使用者分心晚按也無妨**：等待會遞增到 60/90s，幾分鐘後才按仍會咬上
+  （實測 8 分鐘）；不必重新武裝、不必催。
+- **【穩定性定稿（2026-11-27，四次實驗合計）】****11/11 按鍵全咬上**（每次一按
+  就中，最快 1 秒）；涓流偵測上線後連續 5 輪全量（3,599~3,600 筆/3min）零異常。
+  **已穩**：人在場按一下鍵 → 每次抓都順利。**未驗證**：整夜免按鍵自動錄
+  （需 `EnterTherapy` 實測）與單一連線 >1 小時存活。
+- **【多輪實測】**`capture_rounds.py`（N 輪 × M 分鐘）：咬上率 100%，但串流筆數呈
+  「0/全量」交替——**裝置端串流殘留 TTL（約 180s）**：上一條連線的串流剛結束時，
+  新連線的 StartStream 收不到資料（與 App 日誌的 180 秒痕跡一致）。對策：
+  `capture_rounds.py --cooldown 120`＋ready_capture 的成長檢查（見涓流條）。
+  **GetLoggedData 是增量的**：重複拉取只送少量新資料，同一時段重拉約 788 筆
+  固定塊——重複抓不會重複搬全史。**重複抓是安全的**：jsonl 全 append、
+  入庫 INSERT OR IGNORE 冪等；資料庫規模持續增長，回報前先 SELECT COUNT(*).
+- **【串流涓流停擺】**串流可能「有資料後停住」——重送邏輯若只查「總數=0」會漏抓。
+  正解：**25 秒檢查一次串流筆數有無成長，沒成長就重送 StartStream（≤3 次）**；
+  重送時回呼 tag 要重設回 'stream'，並記錄回應（[stream-resp]）供診斷。
+  **驗證準則**：cooldown>0 的 run 每輪 stream_msgs 全 >0＝殘留對策足夠（看
+  `pull/capture_rounds.jsonl`）；再現 0 → 冷卻拉到 ≥200s，或等 180s 殘留過期再試。
 - **未測/待驗證**：長連線持續性（HeartBeat 被庫過濻、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
