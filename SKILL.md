@@ -1,7 +1,7 @@
 ---
 name: resmed-cpap-sdcard
 description: "Parse ResMed AirSense SD cards and AirMini Bluetooth data."
-version: 1.3.0
+version: 1.4.0
 author: Chun Yi Wu (adrianwu0131), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -252,7 +252,23 @@ metadata:
   實測單次連線時長：舊版 0～299 秒 → App 4～10 小時
 - `scripts/start_night.sh` — pi5 夜間錄製啟動腳本（先跑 stable_capture，
   失敗自動退回 capture_hunt）
-- `scripts/ingest_night.sh` — pi5 入庫腳本（offset 由資料實測，不寫死常數）
+- `scripts/fix_am_tables.py` — **AirMini 新層表修復/重產**（2026-11-27）：
+  ①GetLoggedData 同 startTime 是「續批」（values 延續）——按 per-sample
+  UNIQUE(ts) 入庫會把續段整段丟掉（p1min 剩第一截、11/05-11/23 全洞）
+  → 同 (dataId,startTime) 取最長 values 合併；②時鐘漂移跨期：11/6 前
+  「快 13m25s」→ +7:46:35，11/27 「落後 135 分」→ +8:13:33（混用錯 27 分）；
+  ③重產 p1min/events2/新夜 am_nights + 匯出 airmini_nights.csv，
+  窗口命中驗證（每夜 ~450 點）內建；④事件字串需剝任意時區尾碼
+- `scripts/ingest_s10_summary.py` — S10 新夜的彙整層（nightly_timeline A 列＋
+  nightly_summary 新夜）：公式已反推驗證（兩夜比對 100% 吻合）：
+  timeline 只收 CA/OA 事件（Hypopnea/Apnea 不入 timeline，是既有慣例）；
+  summary 事件計數＝s10_events 按 kind 群計（缺類存 None 不補 0）、
+  leak×60、press 直拷
+- `scripts/ingest_s10_inc.py` — **S10 增量入庫**（不用跑全重建 build_db.py
+  ——它開頭就 DB.unlink() 删庫且指向舊 dump）：以 s10_session_files 為
+  檔案級去重鍵，只補新日期；STR ring 全覆寫＝機器現值，報告快照在
+  summary/sync_meta 層保護。注意兩版 resmed_s10 差異：本機版（含
+  blow_press_*/37 鍵）才是 build_db 源，skill 版缺 blow_press 鍵
 - `references/clinical-notes.md` — 中樞型呼吸中止的名詞/機制/2025 AASM 治療選項摘要
   （醫療問答與門診匯談支持，非診斷）
 - `references/file-format.md` — 通道表、header 版位、各檔型格式
@@ -267,4 +283,9 @@ metadata:
   ↔ usage/leak/pressure/AHI）、DATALOG EDF 通道實測表、offset 量測流程、
   夜別彙整 SQLite schema（nightly_summary + sync_meta）
 
-本機已有驗證過的工作副本與資料：`~/airmini/s10/`、SD dump 在 `~/airmini/big/tool_log/`。
+本機已有驗證過的工作副本與資料：`~/airmini/s10/`。**SD dump 已換位置（2026-11-27
+起以 `~/airmini/s10/` 為準）**：新資料放這裡，DATALOG 至 20261126（s10_daily 已
+入庫至 11/26，173 個重疊日期與舊快照零衝突）；`~/airmini/big/tool_log/` 是
+11/03 以前的舊 dump，保留作對照。增量入庫走 `scripts/ingest_s10_inc.py` +
+`scripts/ingest_s10_summary.py`（勿直接跑 `~/airmini/s10/build_db.py`——開頭就
+`DB.unlink()` 删全庫且指向舊 dump 路徑）。
