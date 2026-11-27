@@ -352,6 +352,15 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   先送 EnterTherapy → 再 StartStream → 觀察 180 秒後視窗是否仍在。
   （注意：這會改變機器狀態，屬治療控制面，測試前要和使用者確認，
   且不應在無面罩佩戴時長時間停留於治療狀態。）
+- **【2026-11-27 自我教訓】密集重試會把自己的機會也搞掉**：
+  同一晚連續重試 100+ 次（間隔 5 秒）全部失敗，之後 BlueZ 狀態看起來髒掉。
+  對照：11/7 用 **60~90 秒**間隔輪替是能咬上的。**間隔長不代表咬不到，
+  間隔短一定咬不到**。實作請用 `scripts/window_hunt.py`（60/75/90 輪替）。
+  診斷時也要分清兩種失敗：
+  - `Host is down`（errno 112）＝**對端 SPP 視窗沒開**（等待中，正常）
+  - `Connection reset by peer`（errno 104）＝對端在回應但拒絕（**視窗開著**！）
+    → 立刻重試通常就能成
+  - `br-connection-page-timeout`（bluetoothctl）＝本機 BlueZ 層的 ACL 都建不上
 - **未測/待驗證**：長連線持續性（HeartBeat 被庫過濫、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。

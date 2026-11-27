@@ -1,7 +1,7 @@
 ---
 name: resmed-cpap-sdcard
 description: "Parse ResMed AirSense SD cards and AirMini Bluetooth data."
-version: 1.4.0
+version: 1.2.0
 author: Chun Yi Wu (adrianwu0131), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -99,11 +99,11 @@ metadata:
   免 PIN 重連才需要 `airmini_open_session(masterPairKey)`。
   StartStream 一律用 `airmini_start_stream()`，不要 raw `airmini_call()` 手寫 params
   （漏 `sampleIntervalMs`/`reportIntervalMs` → 裝置回 -32600 Invalid Request）。
-  現行抓取器：`scripts/airmini_capture2.py`（有金鑰免 PIN 免按鈕直連＋自動重連）。
-  藍牙抓取寫到 `scripts/pull/`（`logged_data.json` 971KB + settings/pair 等），
+  現行抓取器：`~/airmini/s10/airmini_capture2.py`（有金鑰免 PIN 免按鈕直連＋自動重連）。
+  藍牙抓取寫到 `~/airmini/s10/pull/`（`logged_data.json` 971KB + settings/pair 等），
   `logged_data.json` 是 **JSONL**（每行一個 JSON-RPC 物件）：逐行 `json.loads`，
   整檔 `json.load` 會 Extra data 直接崩。
-- **即時串流抓取（2026-11-07 真機驗證；現行主驅動＝`scripts/airmini_capture2.py`，
+- **即時串流抓取（2026-11-07 真機驗證；現行主驅動＝`~/airmini/s10/airmini_capture2.py`，
   python ctypes 直連 ch5；`airmini_live.c` 為 C 變體）**：`airmini_start_stream`
   推送 MaskPressure-100hz／InspiratoryPressure-50hz／Leak-TwoSecond，資料以
   StreamData notify 落 `pull/stream_data.jsonl`（每行帶接收毫時戳）。條件：機器插電
@@ -129,7 +129,7 @@ metadata:
 - **協作單寫者**：cpap_data.db 另有輔助實例會同時改寫（親歷：連線中被換成另一組
   修正狀態）——重建/ALTER 前先查檔案 mtime 與 sync_meta keys 變化，腳本一律冪等；
   分工記錄在 sync_meta.coordination_roles：主=Nova（重建/抓取/報告），輔助=pi5
-  （備份+唯讀稽核，勿直接 ALTER）＋本機每日 04:00 cron 備份推送 <backup host>:<backup dir>/。
+  （備份+唯讀稽核，勿直接 ALTER）＋本機每日 04:00 cron 備份推送 pi5:~/airmini_backup/。
 - **AHI 高值先看分母**：佩戴 <1h 的短段（午睡/測試）AHI 被小分母放大（5 事件
   ÷0.42h ≈ 12/小時）。核對異常 AHI 前先看當夜 `usage_hr` 與事件總數；整夜
   使用（>5h）的雙台全月最高僅 6–7/小時，10–20 只出現在短段。
@@ -145,7 +145,7 @@ metadata:
   `nightly_summary` 重建前先備份整表到 nightly_summary_backup.json；重建腳本
   （重聚合 am_ 表 → 重寫 am_nights/CSV/nightly_summary）要回寫 am_meta 的
   night_convention 說明。
-- **總表 schema**：`<aggregate db>` 的 `nightly_summary`（每機每夜一列，
+- **總表 schema**：`~/airmini/cpap_data.db` 的 `nightly_summary`（每機每夜一列，
   PK (ts,tool)；欄位 usage_hr/ahi/hypopnea/central/obstructive/apnea_unspec/rera/
   leak ×3/press ×3/**hi/ai**）+ `sync_meta`（offset/夜別規則/單位分層/快照
   override 註記）。HI/AI 來源：AirSense＝機器日值（`s10_daily.ai/hi`）、
@@ -202,7 +202,7 @@ metadata:
   durationSeconds）；AHI = 五類計數總和 ÷ 用時小時。EVE 註記（AirSense）對照：
   "Central Apnea" / "Hypopnea" / "Obstructive Apnea" / "Apnea"。逐項對照與
   schema 草案見 `references/cpap-data-sources.md`。
-- **repo 的 `scripts/edfparse.py` 缺 `idx`/`rawsamples`**，跑 skill 的
+- **repo 的 `~/airmini/s10/edfparse.py` 缺 `idx`/`rawsamples`**，跑 skill 的
   `scripts/resmed_s10.py` 才有 `chan()/decode_annotations()`。若只能用 repo 版，
   註記通道手算：EVE 每 record 720 bytes、每通道 360 int16 little-endian
   成對成字符。STR 彙總 repo 版 `parse_str()` 可用（實測過）。
@@ -216,7 +216,7 @@ metadata:
   列印「中樞事件前 1-4 分過度換氣」比例。EVE/PLD session 名秒差容錯內建。
 - `scripts/airmini_capture2.py` — AirMini 即時串流擷取（正規握手路線；有金鑰免 PIN
   免按鈕直連、断線自動重連、StartStream interval 由 libairmini 組 params）；
-  工作副本見 `scripts/airmini_capture2.py`
+  工作副本 `~/airmini/s10/airmini_capture2.py`
 - `scripts/ingest_stream.py` — 串流 jsonl → `am_stream_wave` 表（一報多樣本要按
   `startTime + i×interval_ms` 展開，否則七成資料被 UNIQUE 當重複丟棄；INSERT OR IGNORE 冪等）
 - `scripts/plot_stream.py` — 串流三通道波形圖（跨時段插 NaN 斷線、中文字型用系統 .ttc）
@@ -228,15 +228,17 @@ metadata:
   （SDP 列出 ch5=資料通道／ch6=iAP 通道；ch5 待機時隨機開窗，實測 40 選 2）；
   密集輪詢 2~4s，**通了直接握手不放手**（探測腳本「一通就 close」會浪費視窗）。
   `--minutes/--sample/--report` 控時長與取樣率
+- `scripts/window_hunt.py` — **正規獵手**（2026-11-27）：等視窗，**重試間隔
+  60/75/90 秒輪替**（<30s 密集重試會塞死介面——親自違反過這個規則，
+  一晚狂試 100+ 次全失敗）；咬上後在**同一條 session** 內一次做完
+  （GetLoggedData 全史 + StartStream 100Hz），因為視窗是「用完即收」
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
-  握手順序 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
+  握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。
   實測單次連線時長：舊版 0～299 秒 → App 4～10 小時
 - `scripts/start_night.sh` — pi5 夜間錄製啟動腳本（先跑 stable_capture，
   失敗自動退回 capture_hunt）
 - `scripts/ingest_night.sh` — pi5 入庫腳本（offset 由資料實測，不寫死常數）
-- `scripts/pull_history.py` — AirMini **全史 GetLoggedData**（金鑰直連，免 PIN；
-  不會輪換金鑰）。**視窗用完即收**——拉取與串流要同一條連線一起做。
 - `references/clinical-notes.md` — 中樞型呼吸中止的名詞/機制/2025 AASM 治療選項摘要
   （醫療問答與門診匯談支持，非診斷）
 - `references/file-format.md` — 通道表、header 版位、各檔型格式
@@ -245,32 +247,10 @@ metadata:
   conda OpenSSL 建置、signal/事件清單）；驅動 `scripts/airmini_pull.c`
 - `references/airview-pdf-report.md` — AirView 版式 PDF 報告生成
   （reportlab + TrueType Noto TC；缺字 \x00 驗證迴圈）；產品腳本
-  `scripts/build_db.py`（SQLite 彙整＋時間校正）、`avview_charts.py`（圖表）、
+  `~/airmini/s10/build_db.py`（SQLite 彙整＋時間校正）、`avview_charts.py`（圖表）、
   `avview_complete_pdf.py`（三份 PDF 組裝）
 - `references/cpap-data-sources.md` — 兩台機器資料源逐項對照（dataId/EDF 通道
   ↔ usage/leak/pressure/AHI）、DATALOG EDF 通道實測表、offset 量測流程、
   夜別彙整 SQLite schema（nightly_summary + sync_meta）
 
-本機已有驗證過的工作副本與資料：`scripts/`、SD dump 在 `<SD dump dir>/`。
-
-
-## Repo 安裝與環境變數
-
-把本目錄複製到 skills 目錄後即可用（skill 名 `resmed-cpap-sdcard`）。
-AirMini 相關腳本靠環境變數定位資源，**配對碼是憑證，不要寫進版控**：
-
-```bash
-export AIRMINI_LIB=/path/to/libairmini.so      # libairmini 共享庫
-export AIRMINI_ADDR=<BT_ADDR>                 # AirMini 藍牙位址
-export AIRMINI_PIN=<PAIRING_CODE>              # 機身貼紙配對碼（僅首次配對需要）
-export AIRMINI_KEYFILE=pull/master_pair_key.json
-export AIRMINI_OUT=pull/stream_data.jsonl
-export AIRMINI_CHANNELS=5                      # 資料通道（ch6 是 iAP，勿用）
-
-# AirSense 側（SD 卡解析與彙整庫）
-export CPAP_DB=/path/to/cpap_data.db          # 兩台機器的彙整庫
-export CPAP_SD_DUMP=/path/to/sd_dump          # SD 卡 dump 根目錄
-export CPAP_FONT=/path/to/NotoSansTC.ttf      # 中文字型（圖表用）
-```
-
-不設 `AIRMINI_PIN` 時腳本不做 PIN 配對，只走金鑰直連——金鑰已存在即可。
+本機已有驗證過的工作副本與資料：`~/airmini/s10/`、SD dump 在 `~/airmini/big/tool_log/`。

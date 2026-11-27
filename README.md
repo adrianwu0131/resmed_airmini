@@ -171,6 +171,7 @@ scripts/
   start_night.sh                 pi5 nightly launcher (stable capture, falls back to the hunter)
   ingest_night.sh                pi5 ingest launcher (measures the clock offset from the data)
   pull_history.py                 full-history GetLoggedData via key-only reconnect
+  window_hunt.py                  waits for the SPP window at a sane interval, then does it all
 references/
   airmini-access.md              Bluetooth protocol, channels, windows, error triage
   cpap-data-sources.md           AirSense ↔ AirMini signal-by-signal mapping, schema
@@ -210,6 +211,17 @@ Cron on the Pi:
 `ingest_night.sh` measures the clock offset from the data itself (machine
 `startTime` vs local `recv`) rather than reusing a hardcoded number — a fixed
 offset is only valid for the batch it was measured on.
+
+**Waiting for the window.** The device's SPP slot opens intermittently.
+`scripts/window_hunt.py` waits for it at a **60/75/90-second** interval — the
+lesson that cost a night: retrying every 5 seconds jammed the interface and
+a hundred-plus attempts all failed, while the same hunt at 60–90 s does
+land. When it connects it does the history pull and the stream **in the same
+session**, because the slot is withdrawn the moment the connection ends.
+
+Two failures that look alike but are not: `Host is down` means the device's
+window is shut (keep waiting), while `Connection reset by peer` means the
+device answered and refused (the window is open — retry immediately).
 
 **Reading the history.** `scripts/pull_history.py` pulls the full
 `GetLoggedData` history (per-minute leak and pressure, respiratory events,
