@@ -1,6 +1,6 @@
 ## 直連 AirMini 拉量測資料：libairmini + Bluetooth Classic RFCOMM
 
-狀態：**端到端已驗證（2026-11-06）**——配對（PIN <PAIRING_CODE>）→ 全史 GetLoggedData 拉取成功：
+狀態：**端到端已驗證（2026-11-06）**——配對（PIN 1216）→ 全史 GetLoggedData 拉取成功：
 pull/logged_data.json ≈1MB（88 夜完整時序＋呼吸事件，自 2026-05-07 起），
 masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_session(am, storedKey)`
 成功（免 PIN、免重新配對）。**金鑰有效期＝機器當前配對**：任何一次全新 PIN 配對
@@ -28,7 +28,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 
 - 走 **Bluetooth Classic RFCOMM/SPP，channel 5**，不是 BLE（官方 app 反編譯證實：
   `listenUsingRfcommWithServiceRecord`，無任何 GATT 呼叫；iOS 走 MFi iAP2 `com.resmed.rpc`）。
-- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 <PAIRING_CODE>），非動態 PIN。
+- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 1216），非動態 PIN。
   配對成功回 `masterPairKey`（64 hex，持久化）+ `sessionKey`；之後用
   `airmini_open_session(am, masterPairKey)` 免 PIN 重連。
 - 資料通道：AES-256-CBC + JSON-RPC（`[u16 LE 長度][JSON]` 加密後走 vcid 0x0397）。
@@ -78,7 +78,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 ### 建置（CMakeLists 在庫內是壞的，直接 gcc）
 
 - **庫的 CMakeLists 引用不存在的 `tools/airmini-cli/main.c`** → 別走 cmake，直接編所有 `src/*.c`。
-- 本機系統沒有 OpenSSL 開發頭檔，用 conda 的：`/path/to/conda`（include+lib）。
+- 本機系統沒有 OpenSSL 開發頭檔，用 conda 的：`/home/adrian/miniconda3`（include+lib）。
 - **即時串流（2026-11-07 上線）**：`airmini_start_stream` 接受型別 MaskPressure-100hz /
   InspiratoryPressure-50hz / Leak-TwoSecond；機器以 `StreamData` 通知回傳。**取樣率由
   `sampleIntervalMs` 決定**（實測 10＝真 100Hz、40＝25Hz、1000＝1Hz；映射見下方
@@ -89,10 +89,10 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
   後立即 connect 反而失敗；(e) pair 後**不必**再呼 open_session——pair 內部已開會話（見檔首開會話規則）；(f) StartStream
   一律用 `airmini_start_stream()`，不要 raw `airmini_call()` 手寫 params（漏 interval 欄→-32600）。
 ```sh
-gcc -O2 -Wall -I include -I /path/to/conda/include -DAIRMINI_WITH_OPENSSL \
+gcc -O2 -Wall -I include -I /home/adrian/miniconda3/include -DAIRMINI_WITH_OPENSSL \
   src/*.c driver_pull.c -o airmini_pull \
-  -L /path/to/conda/lib -lssl -lcrypto -Wl,-rpath,/path/to/conda/lib
-timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
+  -L /home/adrian/miniconda3/lib -lssl -lcrypto -Wl,-rpath,/home/adrian/miniconda3/lib
+timeout 290 ./airmini_pull <BT_ADDR> 1216   # addr passkey
 ```
 - 驅動 `scripts/airmini_pull.c`：RFCOMM ch5（自定 `sockaddr_rc`，免 BlueZ 頭）→
   `airmini_pair(PIN)` → 回呼鏈 `open_session` → `version/datetime/metrics/settings/history`
@@ -372,6 +372,19 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   （4 次全 timeout）→ 判定為對端狀態。
   另注意 `Errno 16 Device or resource busy` 出現過一次＝**裝置端當時有東西在跑**
   （可能它主動撥入），是值得注意的訊號。
+- **【2026-11-27 重複測試結果】同樣的腳本重複跑是順利的**：
+  今天下午同一支 `ready_capture.py` 連續兩次成功：
+  - 第一次：RFCOMM 連線 → open_session → sessionKey → GetLoggedData **4,575 筆** →
+    100Hz 串流 → 保活
+  - 第二次（14:31，按鈕再按一次）：**3 輪內第 3 次咬上**（前兩輪 Host is down
+    與 90 秒等待），LoggedData **+790 筆**、100Hz 串流 **+2,111 筆**、
+    **保活 55 秒正常回應**、連線持續 30 分鐘未關
+  - **追加寫入模式確認**：logged_data.jsonl 與 stream_data.jsonl 都是 append，
+    重複抓不會衝突（GetLoggedData 用 INSERT OR IGNORE 入庫，重複會被擋）
+- **資料庫規模（2026-11-27 下午）**：am_stream_wave **207,636 筆**
+  （100Hz 197,337／25Hz 8,790／1Hz 1,509）、am_leak_p1min 43,211、
+  am_press_p1min 43,211、am_respiratory_events2 3,914；
+  涵蓋 **2026-11-07 → 2026-11-27**（機器時間 2026-11-27T06:19:33Z）。
 - **未測/待驗證**：長連線持續性（HeartBeat 被庫過濫、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
@@ -435,10 +448,10 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   落地 `chmod 600`、**不進 git**。
 - **環境變數**（寫在啟動腳本裡，不寫進碼）：
   ```
-  AIRMINI_LIB=<capture dir>/libairmini.so
+  AIRMINI_LIB=/home/adrian/airmini_capture/libairmini.so
   AIRMINI_ADDR=<BT_ADDR>
-  AIRMINI_KEYFILE=<capture dir>/pull/master_pair_key.json
-  AIRMINI_OUT=<capture dir>/pull/stream_data.jsonl
+  AIRMINI_KEYFILE=/home/adrian/airmini_capture/pull/master_pair_key.json
+  AIRMINI_OUT=/home/adrian/airmini_capture/pull/stream_data.jsonl
   AIRMINI_CHANNEL=5
   AIRMINI_KEEPALIVE=55
   ```
@@ -464,7 +477,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 ### AirView 版式報告重產（2026-11-06 v2 已對齊原版）
 
 - **SQLite 彙整庫**：`~/airmini/s10/build_db.py`（documents venv）→
-  `'/path/to/cpap_data.db'`（138MB）：`s10_daily/sessions/session_files/pld_2s（99.4 万列）/events/csl_events`
+  `/home/adrian/airmini/cpap_data.db`（138MB）：`s10_daily/sessions/session_files/pld_2s（99.4 万列）/events/csl_events`
   ＋ `am_events/respiratory_events/leak_1min/pressure_1min/sessions/nights/meta`。【2026-11-07 補】
   am_events 實際僅 **371 筆＝生命週期事件**（PowerOn/MaskOn 等），勿再誤記為 3.8 萬——分鐘資料筆數（38,655）才是大件；逐事件時刻**只有 AirSense 有**（Central 1432/Hypopnea 486/Apnea 166/Obstructive 136），AirMini 藍牙只給逐夜次數（CAI/OAI/HI 總別）。
   另有 **`nightly_timeline`**（103 萬列逐點時間軸：night −12h／t_local 本地時／source A·M／minutes 粒度 2·1·0（0＝事件點）；AirSense leak L/s×60 統一 L/min、兩台 mask_press 同 cmH2O；查時段平均**按 minutes 加權**避免 AirSense 取樣密被過度代表）。
