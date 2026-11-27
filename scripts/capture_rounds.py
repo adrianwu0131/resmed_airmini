@@ -13,7 +13,7 @@
 120s + ready_capture 的 StartStream 重送（25s 無資料→重送，最多 3 次）
 就是為它加的。
 
-用法（在 /home/adrian/airmini/s10 下）：
+用法（在 AirMini 工作目錄下）：
     env AIRMINI_LIB=... AIRMINI_ADDR=<BT_ADDR> ... \
         python3 capture_rounds.py --rounds 6 --minutes 3 --cooldown 120
 """

@@ -22,7 +22,7 @@ from matplotlib import font_manager
 font_manager.fontManager.addfont(os.environ.get('AIRMINI_FONT', '/usr/share/fonts/truetype/noto/NotoSansTC.ttf'))
 plt.rcParams.update({'font.family': 'Noto Sans TC', 'font.size': 7})
 
-OUT = Path('/home/adrian/.hermes/cache/scratch/avview')
+OUT = Path(os.environ.get('AIRMINI_CHART_DIR', 'charts'))
 OUT.mkdir(parents=True, exist_ok=True)
 
 BLUE = '#4a78c2'
