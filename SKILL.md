@@ -234,6 +234,9 @@ metadata:
   （GetLoggedData 全史 + StartStream 100Hz），因為視窗是「用完即收」
 - `scripts/session_all2.py` — **咬上就不放**（2026-11-27）：拉全史 + 100Hz 串流
   + 每 55 秒保活，**連線不關**（關閉很可能正是槽位被收回的原因）
+- `scripts/ready_capture.py` — **一次性完整抓取**（2026-11-27 下午，可重複測試）：
+  60/90s 等視窗 → ch5 → session → 拉全史 → 100Hz 串流 → 55s 保活，
+  **追加寫入**（重複抓不衝突；重複已實測兩次成功）
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
   握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。
