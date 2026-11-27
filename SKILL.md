@@ -1,7 +1,7 @@
 ---
 name: resmed-cpap-sdcard
 description: "Parse ResMed AirSense SD cards and AirMini Bluetooth data."
-version: 1.2.0
+version: 1.3.0
 author: Chun Yi Wu (adrianwu0131), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -232,19 +232,20 @@ metadata:
   （SDP 列出 ch5=資料通道／ch6=iAP 通道；ch5 待機時隨機開窗，實測 40 選 2）；
   密集輪詢 2~4s，**通了直接握手不放手**（探測腳本「一通就 close」會浪費視窗）。
   `--minutes/--sample/--report` 控時長與取樣率
-- `scripts/window_hunt.py` — **正規獵手**（2026-11-27）：等視窗，**重試間隔
-  60/75/90 秒輪替**（<30s 密集重試會塞死介面——親自違反過這個規則，
-  一晚狂試 100+ 次全失敗）；咬上後在**同一條 session** 內一次做完
+- `scripts/window_hunt.py` — **無人值守獵手**：**60/75/90 秒輪替**等視窗——但
+  這只是不浪費（無按鍵時視窗根本不會開，狂試沒有意義）；**要咬上有按鍵就走
+  `ready_capture.py` 的武裝 burst**。咬上後在**同一條 session** 內一次做完
   （GetLoggedData 全史 + StartStream 100Hz），因為視窗是「用完即收」
 - `scripts/session_all2.py` — **咬上就不放**（2026-11-27）：拉全史 + 100Hz 串流
   + 每 55 秒保活，**連線不關**（關閉很可能正是槽位被收回的原因）
 - `scripts/ready_capture.py` — **一次性完整抓取**（2026-11-27 武裝版）：**先武裝再按鍵**，
   3s×25 → 15s×20 → 60/90 輪詢；咬上即拉全史 + 100Hz + 55s 保活、**連線不關**、
-  追加寫入不衝突；**25 秒無串流 → 重送 StartStream**（對抗裝置串流殘留 TTL）。
-  **一次成功配方：助手武裝好 → 使用者才按一下鈕**
+  追加寫入不衝突；**25 秒串流無進展 → 重送 StartStream（≤3 次，對抗殘留 TTL
+  與涓流停擺）**。**一次成功配方：助手武裝好 → 使用者才按一下鈕**
 - `scripts/capture_rounds.py` — **多輪穩定性驅動器**（2026-11-27）：
   N 輪 × M 分鐘、輪間 --cooldown（預設 120s 避開串流殘留 TTL）；
-  6/6 咬上、每輪一按的實測統計落地 `pull/capture_rounds.jsonl`
+  實測 8 輪全咬上（6 輪舊版 + run3 修復版），統計落地
+  `pull/capture_rounds.jsonl`
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
   握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。

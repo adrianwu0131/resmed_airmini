@@ -1,6 +1,6 @@
 ## 直連 AirMini 拉量測資料：libairmini + Bluetooth Classic RFCOMM
 
-狀態：**端到端已驗證（2026-11-06）**——配對（PIN 1216）→ 全史 GetLoggedData 拉取成功：
+狀態：**端到端已驗證（2026-11-06）**——配對（PIN <PAIRING_CODE>）→ 全史 GetLoggedData 拉取成功：
 pull/logged_data.json ≈1MB（88 夜完整時序＋呼吸事件，自 2026-05-07 起），
 masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_session(am, storedKey)`
 成功（免 PIN、免重新配對）。**金鑰有效期＝機器當前配對**：任何一次全新 PIN 配對
@@ -28,7 +28,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 
 - 走 **Bluetooth Classic RFCOMM/SPP，channel 5**，不是 BLE（官方 app 反編譯證實：
   `listenUsingRfcommWithServiceRecord`，無任何 GATT 呼叫；iOS 走 MFi iAP2 `com.resmed.rpc`）。
-- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 1216），非動態 PIN。
+- 配對 = SRP-6a，passkey 是**機身貼紙上印刷的固定配對碼**（本例 <PAIRING_CODE>），非動態 PIN。
   配對成功回 `masterPairKey`（64 hex，持久化）+ `sessionKey`；之後用
   `airmini_open_session(am, masterPairKey)` 免 PIN 重連。
 - 資料通道：AES-256-CBC + JSON-RPC（`[u16 LE 長度][JSON]` 加密後走 vcid 0x0397）。
@@ -39,7 +39,7 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
 - 正確入口：控制器**連線快取**——`bluetoothctl devices` 列出後逐台
   `bluetoothctl info <addr>`，認兩個特徵：**Serial Port UUID 00001101-…** 與
   ResMed vendor service `00000000-deca-fade-deca-deafdecacaff`；名稱形如 `ResMed <序號尾>`。
-- 已驗證位址：`40:30:59:D4:25:82`（"ResMed 839182"）。MAC 不印在背面標籤上，別浪費時間找。
+- 已驗證位址：`<BT_ADDR>`（"ResMed <MODEL>"）。MAC 不印在背面標籤上，別浪費時間找。
 
 ### 可連線窗口（連不上時的排查順序，2026-11-07 官方手冊＋實測修正）
 
@@ -83,16 +83,18 @@ masterPairKey 已存 pull/master_pair_key.json；實測重連用 `airmini_open_s
   InspiratoryPressure-50hz / Leak-TwoSecond；機器以 `StreamData` 通知回傳。**取樣率由
   `sampleIntervalMs` 決定**（實測 10＝真 100Hz、40＝25Hz、1000＝1Hz；映射見下方
   「sampleIntervalMs 就是實際取樣間隔」條），報告批節奏＝`reportIntervalMs`。
-- **連線穩定法（實測）**：(a) 狂轟重試（<30s 間隔）會把介面塞死成 EHOSTDOWN/EBUSY，
-  需 60~90s 冷卻再單發；(b) 使用者按 Bluetooth 鈕進配對模式（閃藍）時 SPP 可被直接
-  connect，4 次成功驗證；(c) 暗燈待機時通道間歇性開啟，持續重試可咬住；(d) 掃描（inquiry）
+- **連線穩定法（實測；2026-11-27 歸因修正）**：(a) **無按鍵時視窗根本不會開**——狂轟
+  全數 `Host is down`（一晚 100+ 次實錄），不是重試塞死介面；按鍵開窗後 3s burst
+  才咬得住；(b) 使用者按 Bluetooth 鈕進配對模式（閃藍）時 SPP 可被直接
+  connect，多次成功驗證；(c) 暗燈待機自然開窗機率極低（另一晚 486 試 0 中）——
+  要確定性就請使用者按鍵；(d) 掃描（inquiry）
   後立即 connect 反而失敗；(e) pair 後**不必**再呼 open_session——pair 內部已開會話（見檔首開會話規則）；(f) StartStream
   一律用 `airmini_start_stream()`，不要 raw `airmini_call()` 手寫 params（漏 interval 欄→-32600）。
 ```sh
 gcc -O2 -Wall -I include -I /home/adrian/miniconda3/include -DAIRMINI_WITH_OPENSSL \
   src/*.c driver_pull.c -o airmini_pull \
   -L /home/adrian/miniconda3/lib -lssl -lcrypto -Wl,-rpath,/home/adrian/miniconda3/lib
-timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
+timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 ```
 - 驅動 `scripts/airmini_pull.c`：RFCOMM ch5（自定 `sockaddr_rc`，免 BlueZ 頭）→
   `airmini_pair(PIN)` → 回呼鏈 `open_session` → `version/datetime/metrics/settings/history`
@@ -138,9 +140,10 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   過濾條件寫在查詢裡（如 `ts >= 日期起點`），不要逐筆追查。
 - **機上無對時方法可尋**：RPC manifest 無 SetTime/SyncTime，GetDateTime 只讀
   ——基準錯了只能在我方校正層修（offset/夜別錨點），不要在協定裡找對時指令。
-  **offset 是恆定值非持續漂移**：兩次隔日獨立量測（GetDateTime vs host UTC）＝
-  機器慢約 13m25s／13m28s，幾乎相同（晶振日漂移量級解釋不了）——推測當初被以錯誤
-  參考設定一次後一直維持。操作上仍每批重測，但可拿「慢 ~13.5 分鐘」當先驗。
+  **offset 不是常數（2026-11-27 推翻先前的常數結論）**：跨 20 天漂 11~15 秒、
+  **同一條連線內**也量到 ~33 秒變動——先前「兩次隔日幾乎相同」是抽樣巧合。
+  校正必須**每個 streamId 現量中位偏移**（`ingest_stream.py` 已內建 per-streamId
+  offset + `ts_corrected` 欄），「落後 ~13.5 分鐘」只當粗先驗，不做全域固定 offset。
 
 ### 即時串流（**2026-11-07 真機驗證成功**，現行驅動 `airmini_capture2.py`）
 
@@ -209,7 +212,7 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   `CDLL('libairmini.so')` 裸名載入失敗（dlopen 不搜 cwd）——用絕對路徑或
   LD_LIBRARY_PATH。
 - **【2026-11-07 19:00 重大修正】ch5 是資料通道，但 SPP 視窗是間歇性的；ch6 是 iAP 通道**：
-  - 用 `sdptool browse 40:30:59:D4:25:82` 探索會看到**兩個** RFCOMM 通道：
+  - 用 `sdptool browse <BT_ADDR>` 探索會看到**兩個** RFCOMM 通道：
     **ch6 = "Wireless iAP"**（UUID `00000000-deca-fade-deca-deafdecacaff`，Apple iAP 用）、
     **ch5 = Serial Port**（UUID `00001101-…`，**這才是 libairmini 的資料通道**，
     歷史所有成功串流都在 ch5）。**不要看到 SDP 列出 ch6 就去用 ch6**——
@@ -242,8 +245,9 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
     `open_session` → `{"sessionKey":…}` → StartStream rc=0 → dataIds 三型
     `valid:true` → 5,985 筆／5 分鐘連續零中斷（20 報/秒 × 5 樣 = 100Hz×3 通道），
     全程金鑰直連（**免 PIN、免按鈕**）。回應 `intervalMs=10`、每報 5 樣。
-  - **機器時鐘偏移仍為常數**：本批實測 −810.2s（先前 −807.1/−807.9s）→
-    跨 3 小時漂移 ~3s，確認「常數偏移非持續漂移」，可安全用固定 offset 校正。
+  - **機器時鐘 offset 隨批重測（2026-11-27 已推翻常數結論，見判讀時鐘節）**：
+    本批（11-07）量得 −810.2s、跨 3 小時僅漂 ~3s，當時誤判為常數——
+    後續長期量測發現跨日與同連線內都會變動，校正必須 per-streamId 現量。
   - **待機時串流值全 0**：機器沒在治療時 MaskPressure/InspiratoryPressure/Leak
     全是 0.0（不是沒資料）。要抓「呼吸波形」必須**機器在治療中**。
   - **機器「待機」時開窗機率遠低於「閃藍配對模式」**：要確定性就請使用者
@@ -263,10 +267,11 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   - 實際用法（pi5 整夜錄製）：**金鑰讓重連不需要人**（省掉按鍵＋重打 PIN），
     但**機器端 SPP 視窗仍要它在開機/待機時自然開窗**；視窗沒開就重試迴圈等，
     別誤判成金鑰失效。
-- **重試間隔的鐵則：≥60s（2026-11-07 修正自己的 bug）**：原版抓取器用 30s 重試，
-  違反了同一份 reference 記載的教訓「狂轟重試（<30s 間隔）會把介面塞死成
-  EHOSTDOWN/EBUSY，需 60~90s 冷卻再單發」——自己踩自己寫的坑。已改成
-  60/75/90s 輪替（避免固定節奏）。**改重試間隔前先讀本節的教訓**。
+- **重試節奏分場景（2026-11-27 歸因修正）**：**無人值守等待**（沒人會去按鍵）用
+  60/75/90s 輪替——但這只是不浪費、不代表能咬上；**要咬上＝武裝 `ready_capture.py`
+  後請使用者按一下鍵**，3s burst 在按鍵落下 3~10 秒內連上（6/6 實測）。
+  無按鍵狂試的成因是「視窗不會開」，不是節奏傷介面。**改抓取節奏前先讀本條
+  與「視窗一次性」條**。
 - **BlueZ 復原已內建進抓取器**：`airmini_capture2.py` 的 `bluez_recover()` 在
   遇到 errno 112/114 時自動執行 `bluetoothctl disconnect → 4s → connect`，
   再重試一次 RFCOMM。仍失敗就等下一輪。
@@ -355,10 +360,11 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   先送 EnterTherapy → 再 StartStream → 觀察 180 秒後視窗是否仍在。
   （注意：這會改變機器狀態，屬治療控制面，測試前要和使用者確認，
   且不應在無面罩佩戴時長時間停留於治療狀態。）
-- **【2026-11-27 自我教訓】密集重試會把自己的機會也搞掉**：
-  同一晚連續重試 100+ 次（間隔 5 秒）全部失敗，之後 BlueZ 狀態看起來髒掉。
-  對照：11/7 用 **60~90 秒**間隔輪替是能咬上的。**間隔長不代表咬不到，
-  間隔短一定咬不到**。實作請用 `scripts/window_hunt.py`（60/75/90 輪替）。
+- **【密集重試的兩面（2026-11-27 定案）】**：**無按鍵**的整夜密集重試（100+ 次、
+  5 秒間隔）全敗——是視窗根本沒開，不是介面被塞死；**按鍵開窗後** 3s burst
+  是唯一可靠咬法（6/6 輪、每輪一按、3~10 秒內連上）。無人值守等視窗用
+  `scripts/window_hunt.py`（60/75/90 輪替），使用者配合時用
+  `scripts/ready_capture.py`（武裝→按一下）。
   診斷時也要分清兩種失敗：
   - `Host is down`（errno 112）＝**對端 SPP 視窗沒開**（等待中，正常）
   - `Connection reset by peer`（errno 104）＝對端在回應但拒絕（**視窗開著**！）
@@ -384,10 +390,10 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
     **保活 55 秒正常回應**、連線持續 30 分鐘未關
   - **追加寫入模式確認**：logged_data.jsonl 與 stream_data.jsonl 都是 append，
     重複抓不會衝突（GetLoggedData 用 INSERT OR IGNORE 入庫，重複會被擋）
-- **資料庫規模（2026-11-27 下午）**：am_stream_wave **207,636 筆**
-  （100Hz 197,337／25Hz 8,790／1Hz 1,509）、am_leak_p1min 43,211、
-  am_press_p1min 43,211、am_respiratory_events2 3,914；
-  涵蓋 **2026-11-07 → 2026-11-27**（機器時間 2026-11-27T06:19:33Z）。
+- **資料庫規模（持續增長，入庫後 SELECT COUNT(*) 查當下值）**：am_stream_wave 由
+  多輪 100Hz 串流累積（每輪 3 分鐘 ≈ +33k 列；INSERT OR IGNORE 冪等、重複被擋）；
+  am_leak_p1min／am_press_p1min 43,211、am_respiratory_events2 3,914＝
+  機器保存的**全史**分鐘值與事件（至機器時間 11/25 22:00Z）。
 - **【2026-11-27 視窗一次性＋一次成功配方】**視窗像「一次性門票」：按鍵後約
   1~2 分鐘內可連（errno 104 後 61 秒仍連上成功）；但**任何「連上就關」的測試
   會提前收掉門票**（單發試連成功後 21 秒即 112——那輪三次按鍵才成功的直接原因，
@@ -406,6 +412,17 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   25 秒無串流 → 重送 StartStream（最多 3 次）；`capture_rounds.py --cooldown 120`。
   另證實 **GetLoggedData 增量行為**：重複拉取只送少量新資料（21/4/3 筆），
   同一時段重拉約 788 筆固定塊——不會重複搬全史。
+- **【2026-11-27 run3：涓流停擺也會發生，補強改「無進展即重送」】**第 2 次穩定性
+  測試（run3）第 2 輪：104 立搶咬上後，串流只到 25 筆就停（涓流停擺），
+  而原本的「重送」只看「總數=0」而漏抓。已改為 **25 秒檢查一次成長：
+  沒成長就重送 StartStream（最多 3 次）**，同時記錄 StartStream 回應
+  （[stream-resp]）以便事後診斷；run3 第 2 輪之後（重啟驅動器）兩輪都是
+  全量 3,599 筆。另一個教訓：重送時 `S['tag']` 要重設為 'stream'，
+  否則回應會被當成其它 tag 處理。
+  **補強驗證準則**：cooldown>0 的 run 若每輪 `stream_msgs` 全 >0＝殘留 TTL
+  對策足夠（看 `pull/capture_rounds.jsonl`）；再現 0 → 冷卻拉到 ≥200s，
+  或以 ready_capture 的 StartStream 重送記錄為準（重送 3 次仍無資料＝
+  殘留未清，等 180s 後重試）。
 - **未測/待驗證**：長連線持續性（HeartBeat 被庫過濻、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
@@ -440,10 +457,11 @@ timeout 290 ./airmini_pull 40:30:59:D4:25:82 1216   # addr passkey
   - **表設計**：`am_stream_wave(ts, channel, value, interval_ms, stream_id, ts_corrected,
     offset_s)`，UNIQUE(ts, channel, interval_ms, stream_id)；匯入用 `INSERT OR IGNORE`
     （冪等、可重跑、不覆寫既有列），開 `busy_timeout` 應付 WAL 下的多寫入者。
-  - **offset 由資料本身量**：成對比較 `startTime`（機器時鐘）與 jsonl 的 `recv`（本機 UTC）
-    即得偏移——本批實測 −807.1s（1Hz 段）與 −807.9s（40ms 段），跨 4 小時漂移僅 0.7s
-    ⇒ 機器時鐘是**常數偏移**（非持續漂移），可安全校正。機器錶落後本機 ⇒
-    `ts_corrected = ts + offset`（本批 +807s），原始 ts 一併保留。
+  - **offset 由資料本身量、按 streamId 各量各的**：成對比較 `startTime`（機器時鐘）
+    與 jsonl 的 `recv`（本機 UTC）取中位，先驗約落後 ~810 秒——但跨日、甚至同
+    連線內都會變動（不是常數，見判讀機器時鐘節），**不要全域套一個數**；
+    `ingest_stream.py` 的 per-streamId 中位偏移 + `ts_corrected` 欄是定案做法，
+    原始 ts 一併保留。
   - **畫圖跨時段要斷線**：不同 streamId 或時間跳 >5s 的兩段若直接畫會出現假的斜坡
     長條——在斷點插 `NaN` 再畫。
   - matplotlib 中文字型：`font_manager.addfont('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')`
