@@ -232,6 +232,10 @@ metadata:
   60/75/90 秒輪替**（<30s 密集重試會塞死介面——親自違反過這個規則，
   一晚狂試 100+ 次全失敗）；咬上後在**同一條 session** 內一次做完
   （GetLoggedData 全史 + StartStream 100Hz），因為視窗是「用完即收」
+- `scripts/session_all2.py` — **咬上就不放**（2026-11-27）：拉全史 + 100Hz 串流
+  + 每 55 秒保活，**連線不關**（關閉很可能正是槽位被收回的原因）
+- `scripts/pull_history.py` — AirMini **全史 GetLoggedData**（金鑰直連，免 PIN；
+  不會輪換金鑰）。**視窗用完即收**——拉取與串流要同一條連線一起做。
 - `scripts/stable_capture.py` — **穩定版**（2026-11-07 23:30 依手機 App 日誌重建）：
   握手間順 GetVersion → GetSessionKey → **SubscribeEvent** → Get → StartStream，
   加上 **55 秒保活輪詢**（App 靠每 60 秒主動送一輪 RPC 保活；只收不送會被閒置收線）。

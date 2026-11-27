@@ -361,6 +361,17 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   - `Connection reset by peer`（errno 104）＝對端在回應但拒絕（**視窗開著**！）
     → 立刻重試通常就能成
   - `br-connection-page-timeout`（bluetoothctl）＝本機 BlueZ 層的 ACL 都建不上
+- **【2026-11-27 策略修正】咬上之後「不要關連線」**：先前「抓完就 close()」——關閉很可能
+  **正是**裝置收回 SPP 槽位的原因（實測：12:59 咬上、13:00 關閉、之後 30 分鐘
+  100+ 次重試全失敗）。改成 `scripts/session_all2.py`：**咬上後拉全史 + 開 100Hz
+  串流 + 每 55 秒保活 + 連線不關**。若要讓槽位維持開著，就別主動斷。
+- **【2026-11-27 交叉驗證法】分清「對端沒回應」與「本機 BlueZ 有問題」**：
+  用**另一台機器**（pi5，獨立藍牙硬體、不同位置）試連同一台 AirMini：
+  兩台都連不上 → 對端沒在回應（機器沒廣播／沒開機）；只有本機連不上
+  → 本機 BlueZ 的問題（可用 disconnect→connect 復原）。本次 pi5 也連不上
+  （4 次全 timeout）→ 判定為對端狀態。
+  另注意 `Errno 16 Device or resource busy` 出現過一次＝**裝置端當時有東西在跑**
+  （可能它主動撥入），是值得注意的訊號。
 - **未測/待驗證**：長連線持續性（HeartBeat 被庫過濫、120s 無 StreamData 即判斷斷流）、
   串型別組合上限、**`EnterTherapy` 能否免按鍵維持 SPP 視窗**、保活輪詢間隔的最佳值
   （App 用 60s；我們用 55s 避開與 Heartbeat 同相位，實際門檻未量）。
