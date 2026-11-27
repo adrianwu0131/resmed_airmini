@@ -144,7 +144,7 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
 - 實測鏈：python 直連 ch5（閃藍時最穩）→ ctypes `pair(PIN)`（回應含 masterPairKey+sessionKey）→ `open_session(key)`（**rc=2 ERR_STATE
   ＝會話已開＝成功語意，此步不可略**）→ GetDateTime（回 dateTime ✓）→
   StartStream（[ok:stream] 回 dateTime＋dataIds 三型 valid:true ✓）→ StreamData 通知。
-- **實作檔**：`airmini_capture2.py`（**現行正解**）／
+- **實作檔**：`/home/adrian/airmini/s10/airmini_capture2.py`（**現行正解**）／
   `airmini_server.py`（舊版，StartStream 手寫 params 有 bug，勿再用）／`airmini_live.py`
   （舊版，開會話順序有誤）。
   ＋ `libairmini.so`（`gcc -fPIC -shared src/*.c -lssl -lcrypto`，含 rpath）。
@@ -288,6 +288,36 @@ timeout 290 ./airmini_pull <BT_ADDR> <PAIRING_CODE>   # addr passkey
   - **ts 格式要統一帶小數秒**（`2026-11-07T05:24:47.395000`）：實測若整秒時
     省略小數秒，會出現同一分鐘內部分列有小數秒、部分沒有，字串比較與
     `LIKE` 查詢都會漏列。真實資料（由 `datetime.isoformat()` 產生）已一致。
+- **【2026-11-27 新發現】金鑰會因機器端配對狀態改變而失效，錯誤碼是 `-11005 VerificationFailure`**：
+  - 症狀：`open_session` 送出 rc=0（已送出），但**沒有** `[ok:session]` 回應；
+    隨後的 StartStream 回 **rc=2**（ERR_STATE＝session 沒開成），
+    裝置端 JSON-RPC 錯誤是 `{"code":-11005,"message":"VerificationFailure"}`，
+    然後連線被 `Errno 104 Connection reset by peer` 收掉。
+    **不要把 rc=2 當成根因**——那只是下游症狀；真正的錯在 open_session 被拒。
+  - **實例**：11/7 配對的金鑰（`145AE0EF02B5…`）在 11/27 被拒；
+    重新用 PIN 配對得到新金鑰（`08E325873F3E…`）後，**同一支程式立刻恢復正常**
+    （免 PIN 直連 + 100Hz 串流 1,800 筆零中斷）。
+  - **成因**：masterPairKey 只在「機器當前配對」有效。任何改變配對狀態的動作
+    （出廠重置、App 重新配對、換新機）都會輪換它。**隔了幾天就要重新配對**，
+    不要假設舊金鑰還能用。
+  - **分診順序**：看到 rc=2 / -32600 / 沉默時，先確認 **open_session 有沒有真的
+    換到 sessionKey**。沒有 → 是金鑰問題（重新配對），不是參數問題。
+  - **重新配對的動作**：連線後 `airmini_pair(am, PIN, cb, user)` → 回應含新的
+    masterPairKey → **立刻回寫 key 檔** → 同步給其他機器（pi5）→ 再驗證直連。
+  - **重新配對後舊金鑰要一併清掉**：pi5 等其他機器上的 key 檔也要換，
+    否則那些機器會繼續拿舊金鑰去撞 -11005。
+  - **`SubscribeEvent` 的參數名是猜的**：App 日誌不記參數內容，只記 count=4/3。
+    我依 NOTIFICATION 事件名湊的 4 個（FGState / SystemError / RecoverableError /
+    TherapyState）**未經驗證**，其中 `TherapyState` 在 App 日誌中不存在。
+    下次連線時要嘛把這步拿掉驗證（先確認它不是 -11005 的成因），
+    要嘛從 App 抓真正的參數。
+- **【2026-11-27 視窗行為確認】SPP 視窗是「用完即收」**：一次連線內做完
+  GetLoggedData + StartStream 後，只要連線一斷（即使是我方主動關），
+  機器就把 SPP 槽位收回 → 立刻再連會得到 `Host is down`。
+  **要把多件事塞進同一個 session**：拉全史與開串流要**同一條連線**一起送
+  （`scripts/pull_history.py` 與 `session_all` 流程），不要分兩次連。
+  順帶：`airmini_pull.c` 走的是「每次重新配對」的路線（會輪換金鑰），
+  改用金鑰直連的 `scripts/pull_history.py` 才不會動到配對狀態。
 - **【2026-11-07 23:30 根因定案：穩定連線要抄手機 App 的三件事】**
   對照 `~/airmini/small/airmini_log_*.txt`（App 的 BLE RPC 日誌）與我們自己的失敗記錄：
   | | 我們的紀錄 | App 的紀錄 |

@@ -29,7 +29,7 @@ Then load the skill with `skill_view(name='resmed-cpap-sdcard')`.
 
 ---
 
-## The six things that cost the most time
+## The seven things that cost the most time
 
 These are all in `references/airmini-access.md` with the supporting measurements.
 
@@ -112,6 +112,37 @@ Two notes from the app log worth keeping:
   worn), and most are `INBOUND_CONNECTION` — *the device dials out*. That is
   why the SPP window is so hard to catch in standby.
 
+**7. A stored key expires when the device's pairing changes.**
+The `masterPairKey` is only valid for the device's *current* pairing. A
+factory reset, an app re-pair, or a different machine rotates it. Symptoms:
+
+```
+open_session 送出 rc=0          ← sent, but no sessionKey comes back
+StartStream 送出 rc=2            ← ERR_STATE: the session never opened
+[err:stream] {"error":{"code":-11005,"message":"VerificationFailure"}}
+```
+
+`-11005 VerificationFailure` is the tell. **Do not read the `rc=2` as the
+cause** — it is downstream. Check first whether `open_session` actually
+returned a sessionKey; if not, re-pair.
+
+Re-pairing is one call and it fixes everything else:
+
+```python
+lib.airmini_pair(am, PIN, cb, user)   # response carries the new masterPairKey
+```
+
+Write the new key to the key file immediately, copy it to any other machine
+that holds one (they will otherwise keep hitting `-11005`), then verify the
+key-only reconnect. In one measured instance a 20-day-old key was rejected
+and the *same program* worked again the moment a fresh pair supplied a new
+key — 1,800 records at 100 Hz with no interruption.
+
+The device's SPP window is also **closed once you are done**: after a
+connection ends, even one you closed yourself, the slot is withdrawn and the
+next connect gets `Host is down`. Put everything you need into a single
+session.
+
 **Still open:** `EnterTherapy` / `EnterMaskFit` / `EnterStandby` exist as
 protocol methods (no public libairmini API for them). Whether sending
 `EnterTherapy` keeps the SPP window open in standby is **unverified** — it
@@ -139,6 +170,7 @@ scripts/
   night_curve_check.py           per-night curve/event alignment (pre-event hyperventilation)
   start_night.sh                 pi5 nightly launcher (stable capture, falls back to the hunter)
   ingest_night.sh                pi5 ingest launcher (measures the clock offset from the data)
+  pull_history.py                 full-history GetLoggedData via key-only reconnect
 references/
   airmini-access.md              Bluetooth protocol, channels, windows, error triage
   cpap-data-sources.md           AirSense ↔ AirMini signal-by-signal mapping, schema
@@ -178,6 +210,13 @@ Cron on the Pi:
 `ingest_night.sh` measures the clock offset from the data itself (machine
 `startTime` vs local `recv`) rather than reusing a hardcoded number — a fixed
 offset is only valid for the batch it was measured on.
+
+**Reading the history.** `scripts/pull_history.py` pulls the full
+`GetLoggedData` history (per-minute leak and pressure, respiratory events,
+therapy status) over the key-only reconnect — it never re-pairs, so it never
+rotates the key. The device's SPP window is "closed once you are done": a
+single connection has to carry both the history pull and the stream, because
+reconnecting straight after drops in gets `Host is down`.
 
 **Known limitation.** In standby the device's SPP window is rare (486 polls,
 0 hits). The app's own connections cluster around 23:00–09:30 while the
